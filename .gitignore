@@ -1,0 +1,18 @@
+# Môi trường ảo Python
+venv/
+__pycache__/
+*.pyc
+
+# Dữ liệu (quá nặng, tái tạo lại bằng script trong HANDOFF.md)
+data/raw/*.csv
+data/simulated/*.csv
+
+# Credentials — TUYỆT ĐỐI không commit
+*.json
+access_token
+.env
+
+# File hệ điều hành/IDE (không cần thiết cho người khác)
+.vscode/
+Thumbs.db
+.DS_Store
