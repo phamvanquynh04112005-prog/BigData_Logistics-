@@ -5,7 +5,7 @@
 - [x] Sinh 2 bảng mô phỏng: `Dim_Carrier` (6 hãng), `Dim_Warehouse` (23 kho, theo `Order Region` thật)
 - [x] Data catalog tự động (`DATA_CATALOG.md`) — mô tả toàn bộ cột của 5 file dữ liệu
 - [x] Tổ chức thư mục theo zone `raw` / `simulated`
-- [ ] Đẩy dữ liệu lên GCS (raw zone) — tạm hoãn, chờ tài khoản GCP
+- [ ] Đẩy dữ liệu lên MinIO local (raw zone) — dùng Docker Compose, theo Mục 4b (thay GCS do hạn chế thẻ tín dụng)
 - [ ] Kafka producer mô phỏng sự kiện tracking — để dành đúng lịch T7
 
 ## 2. Nguồn dữ liệu — thật hay mô phỏng?
@@ -74,3 +74,51 @@ Nguyên tắc: tầng `raw` giữ nguyên bản gốc, mọi xử lý dưới đ
 | `on_time`                   | `Late_delivery_risk` hoặc suy từ `Delivery Status` |
 | `warehouse_key`             | Join `Order Region` ↔ `Dim_Warehouse.region`       |
 | `carrier_key`               | Cần tự random-map hợp lý (chưa có sẵn)             |
+
+## 7. Cách kết nối tới data lake (MinIO local)
+
+- Trước khi chạy bất kỳ job Spark/script nào đọc dữ liệu, cần bật MinIO trước:
+
+  docker compose up -d
+
+- Thông tin kết nối:
+  - Endpoint: `http://localhost:9000`
+  - Access Key: `minioadmin`
+  - Secret Key: `minioadmin123`
+  - Bucket: `raw`
+- Dữ liệu nằm tại các đường dẫn:
+  - `s3://raw/orders/DataCoSupplyChainDataset.csv`
+  - `s3://raw/orders/DescriptionDataCoSupplyChain.csv`
+  - `s3://raw/access_logs/tokenized_access_logs.csv`
+  - `s3://raw/dim_warehouse/Dim_Warehouse.csv`
+  - `s3://raw/dim_carrier/Dim_Carrier.csv`
+- PySpark đọc trực tiếp qua giao thức `s3a://` (tương thích S3), chỉ cần cấu hình endpoint trỏ về MinIO thay vì AWS/GCP thật — code logic xử lý giữ nguyên.
+
+  Lưu, rồi commit như thường lệ:
+  git add .
+  git commit -m "Update handoff doc: reflect MinIO local setup instead of GCS"
+  git push
+
+## 8. Streaming — Kafka producer (T7)
+
+- Trước khi chạy: `docker compose up -d` (đã bao gồm Kafka + Zookeeper + Kafka UI).
+- Chạy producer mô phỏng: `python scripts/kafka_producer.py` (Ctrl+C để dừng).
+- Thông tin kết nối:
+  - Bootstrap servers (từ máy host): `localhost:9092`
+  - Bootstrap servers (từ container khác trong cùng Docker network, ví dụ Spark sau này): `kafka:29092`
+  - Topic: `shipment-tracking-events`
+  - Kafka UI (xem trực quan): `http://localhost:8080`
+- Schema message (JSON):
+
+| Field             | Kiểu                   | Ý nghĩa                                                              |
+| ----------------- | ---------------------- | -------------------------------------------------------------------- |
+| `event_id`        | string (UUID)          | Định danh duy nhất mỗi sự kiện                                       |
+| `shipment_id`     | int                    | = `Order Id` thật trong dataset gốc                                  |
+| `carrier_id`      | string                 | Random từ `Dim_Carrier`                                              |
+| `warehouse_id`    | string                 | Match theo `Order Region` của đơn hàng với `Dim_Warehouse`           |
+| `event_type`      | string                 | `SCAN` / `IN_TRANSIT` / `OUT_FOR_DELIVERY` / `DELIVERED` / `DELAYED` |
+| `event_timestamp` | string (ISO 8601, UTC) | Thời điểm sự kiện                                                    |
+| `region`          | string                 | Vùng của đơn hàng                                                    |
+
+- Spark Structured Streaming (bước T8) đọc trực tiếp từ topic này qua Kafka connector chuẩn — code không cần thay đổi gì so với việc dùng Amazon MSK/Managed Kafka thật, chỉ khác endpoint kết nối.
+- [x] Kafka producer mô phỏng sự kiện tracking — chạy được, xác nhận qua Kafka UI (20/20 message)
