@@ -8,6 +8,8 @@ attrs==26.1.0
 babel==2.18.0
 beautifulsoup4==4.15.0
 bleach==6.4.0
+boto3==1.43.67
+botocore==1.43.67
 certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.4.9
@@ -30,6 +32,7 @@ ipywidgets==8.1.8
 isoduration==20.11.0
 jedi==0.20.0
 Jinja2==3.1.6
+jmespath==1.1.0
 json5==0.15.0
 jsonpointer==3.1.1
 jsonschema==4.26.0
@@ -91,6 +94,7 @@ rfc3339-validator==0.1.4
 rfc3986-validator==0.1.1
 rfc3987-syntax==1.1.0
 rpds-py==2026.6.3
+s3transfer==0.19.2
 Send2Trash==2.1.0
 six==1.17.0
 soupsieve==2.9.1
