@@ -2,7 +2,7 @@
 
 **Vai trò:** Data Warehouse & dbt Developer
 **Người thực hiện:** Huy
-**Trạng thái tại thời điểm viết tài liệu:** Đã hoàn thiện thiết kế + sinh xong 3/4 dimension (`Dim_Carrier`, `Dim_Warehouse` do Quỳnh chuẩn bị; `Dim_Route`, `Dim_Date` do Huy tự sinh). Bảng `Fact_Shipment` **chưa có dữ liệu thật** — đang chờ Khang hoàn thành làm sạch dữ liệu bằng PySpark.
+**Trạng thái hiện tại:** Đã hoàn thiện thiết kế, đủ 4 dimension và `Fact_Shipment` 180.519 dòng trong DuckDB. Toàn bộ dbt models/tests đã chạy thành công local. Repo có DDL và job nạp BigQuery; triển khai GCP cần project, dataset và Application Default Credentials của nhóm.
 
 ---
 
@@ -40,7 +40,7 @@ DIM_ROUTE ---(route_key)--- FACT_SHIPMENT ---(warehouse_key)--- DIM_WAREHOUSE
 ### 3.1 Fact_Shipment (bảng trung tâm)
 
 **Grain:** 1 dòng = 1 order item.
-**Trạng thái:** Chưa build — cần `Fact_Shipment` đã làm sạch từ bước PySpark (Khang) làm đầu vào.
+**Trạng thái:** Đã build và nạp 180.519 dòng vào warehouse DuckDB; job BigQuery nằm tại `scripts/load_bigquery.py`.
 
 | Cột | Kiểu | PK/FK | Lấy từ (nguồn) |
 |---|---|---|---|
@@ -115,9 +115,11 @@ DIM_ROUTE ---(route_key)--- FACT_SHIPMENT ---(warehouse_key)--- DIM_WAREHOUSE
 
 ---
 
-## 5. Việc còn lại (chưa hoàn thành)
+## 5. Trạng thái triển khai
 
-- [ ] Nạp `Fact_Shipment` — phụ thuộc đầu ra PySpark từ Khang (`carrier_key` cần random-map hợp lý, `warehouse_key`/`route_key`/`date_key` cần join đúng).
-- [ ] Viết DDL (CREATE TABLE) chính thức cho cả 5 bảng trên nền tảng đích (BigQuery hoặc DuckDB/PostgreSQL).
-- [ ] Setup dbt project (staging → marts) + test dữ liệu (`not_null`, `unique`, `relationships`).
-- [ ] Xây view SLA giao hàng theo tháng.
+- [x] Nạp `Fact_Shipment` local: 180.519 dòng, đủ 4 khóa ngoại.
+- [x] Viết DDL chính thức cho DuckDB/PostgreSQL và BigQuery.
+- [x] Setup dbt staging → marts và các test `not_null`, `unique`, `relationships`, `accepted_values`.
+- [x] Xây `sla_monthly` dưới dạng view.
+- [ ] Chạy `scripts/load_bigquery.py` bằng project/dataset và credentials GCP thật của nhóm.
+- [ ] Chạy `dbt build` với profile BigQuery của nhóm và lưu log bàn giao.

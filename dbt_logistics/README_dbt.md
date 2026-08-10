@@ -61,13 +61,14 @@ dbt test
   (`Dim_Carrier`, `Dim_Warehouse`, `Dim_Route`, `Dim_Date`, `Fact_Shipment`)
   — dùng `ddl_bigquery.sql` hoặc `ddl_duckdb_postgres.sql` để tạo trước,
   rồi nạp dữ liệu vào.
-- `Fact_Shipment` hiện **chưa có dữ liệu thật** — đang chờ Khang hoàn
-  thành làm sạch dữ liệu bằng PySpark. Trước khi có, các model
-  `stg_shipment`, `route_performance`, `carrier_performance`,
-  `sla_monthly` sẽ chạy lỗi (không tìm thấy bảng nguồn).
-- Có thể test riêng 4 model staging đầu (`stg_carrier`, `stg_warehouse`,
-  `stg_route`, `stg_date`) ngay bây giờ, vì 4 dimension này đã có dữ liệu
-  thật rồi:
+- DuckDB local hiện có đủ `Fact_Shipment` 180.519 dòng. Có thể tái tạo bằng
+  `scripts/load_fact_shipment_duckdb.py`.
+- Để nạp BigQuery, cài `google-cloud-bigquery`, đăng nhập Application Default
+  Credentials và chạy:
   ```bash
-  dbt run --select stg_carrier stg_warehouse stg_route stg_date
+  python scripts/load_bigquery.py --project <project_id> --dataset <dataset_id>
   ```
+- Profile mẫu để chạy dbt trên BigQuery nằm ở
+  `dbt_logistics/profiles_bigquery.example.yml`. Cài thêm `dbt-bigquery`, đặt
+  `GCP_PROJECT_ID`, `BIGQUERY_DATASET`, rồi chạy `dbt build` với profile đó.
+- Nên dùng `dbt build` để chạy models và tests theo đúng dependency graph.

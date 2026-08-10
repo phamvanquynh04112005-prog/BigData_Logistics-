@@ -52,15 +52,17 @@ CREATE TABLE IF NOT EXISTS `<project_id>.<dataset_id>.Fact_Shipment` (
     on_time          BOOL,
     sales            FLOAT64,
     profit           FLOAT64
+    ,shipment_date   DATE NOT NULL OPTIONS(description='Technical partition column derived from date_key')
 )
-PARTITION BY DATE(TIMESTAMP_MILLIS(date_key * 86400000))
+PARTITION BY shipment_date
 CLUSTER BY warehouse_key, carrier_key;
 
 -- Ghi chú:
 -- - BigQuery không hỗ trợ FOREIGN KEY / PRIMARY KEY ràng buộc thật sự
 --   (chỉ mang tính khai báo, không enforce) — việc kiểm tra toàn vẹn
 --   dữ liệu (not_null, unique, relationships) sẽ làm ở lớp dbt test.
--- - PARTITION BY theo date_key giúp query theo khoảng thời gian nhanh hơn
+-- - shipment_date là cột kỹ thuật được suy ra từ Dim_Date.full_date khi nạp.
+--   BigQuery partition trực tiếp theo DATE này để query thời gian hiệu quả
 --   và giảm chi phí quét dữ liệu (đúng khuyến nghị "partition theo
 --   ship_date" trong đề bài).
 -- - CLUSTER BY warehouse_key, carrier_key giúp tăng tốc các câu query
