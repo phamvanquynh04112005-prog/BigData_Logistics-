@@ -1,0 +1,24 @@
+route_id,origin_market,destination_region
+RT001,Africa,Central Africa
+RT002,Africa,East Africa
+RT003,Africa,North Africa
+RT004,Africa,Southern Africa
+RT005,Africa,West Africa
+RT006,Europe,Eastern Europe
+RT007,Europe,Northern Europe
+RT008,Europe,Southern Europe
+RT009,Europe,Western Europe
+RT010,LATAM,Caribbean
+RT011,LATAM,Central America
+RT012,LATAM,South America
+RT013,Pacific Asia,Central Asia
+RT014,Pacific Asia,Eastern Asia
+RT015,Pacific Asia,Oceania
+RT016,Pacific Asia,South Asia
+RT017,Pacific Asia,Southeast Asia
+RT018,Pacific Asia,West Asia
+RT019,USCA,Canada
+RT020,USCA,East of USA
+RT021,USCA,South of USA
+RT022,USCA,US Center
+RT023,USCA,West of USA
