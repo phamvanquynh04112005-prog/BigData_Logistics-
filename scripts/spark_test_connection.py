@@ -61,7 +61,7 @@ def read_csv(spark: SparkSession, path: str):
     return (
         spark.read.option("header", "true")
         .option("inferSchema", "true")
-        .option("encoding", "latin1")
+        .option("encoding", "iso-8859-1")
         .csv(path)
     )
 
