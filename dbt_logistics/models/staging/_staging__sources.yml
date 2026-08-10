@@ -1,0 +1,13 @@
+version: 2
+
+sources:
+  - name: raw_warehouse
+    # BigQuery: điền đúng dataset đã tạo bảng bằng ddl_bigquery.sql
+    # DuckDB/Postgres: điền đúng schema đã tạo bằng ddl_duckdb_postgres.sql
+    schema: "{{ var('raw_schema', 'main') }}"
+    tables:
+      - name: Dim_Carrier
+      - name: Dim_Warehouse
+      - name: Dim_Route
+      - name: Dim_Date
+      - name: Fact_Shipment

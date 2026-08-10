@@ -1,0 +1,51 @@
+version: 2
+
+models:
+  - name: stg_carrier
+    columns:
+      - name: carrier_id
+        tests: [not_null, unique]
+
+  - name: stg_warehouse
+    columns:
+      - name: warehouse_id
+        tests: [not_null, unique]
+
+  - name: stg_route
+    columns:
+      - name: route_id
+        tests: [not_null, unique]
+
+  - name: stg_date
+    columns:
+      - name: date_key
+        tests: [not_null, unique]
+
+  - name: stg_shipment
+    columns:
+      - name: shipment_id
+        tests: [not_null, unique]
+      - name: carrier_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_carrier')
+                field: carrier_id
+      - name: warehouse_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_warehouse')
+                field: warehouse_id
+      - name: route_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_route')
+                field: route_id
+      - name: date_key
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_date')
+                field: date_key

@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: route_performance
+    columns:
+      - name: route_id
+        tests: [not_null, unique]
+
+  - name: carrier_performance
+    columns:
+      - name: carrier_id
+        tests: [not_null, unique]
+
+  - name: sla_monthly
+    columns:
+      - name: year
+        tests: [not_null]
+      - name: month
+        tests: [not_null]

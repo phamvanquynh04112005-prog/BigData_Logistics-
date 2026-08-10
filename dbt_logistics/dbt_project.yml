@@ -1,0 +1,23 @@
+name: 'dbt_logistics'
+version: '1.0.0'
+config-version: 2
+
+# Tên profile phải khớp với tên khai báo trong ~/.dbt/profiles.yml
+# (file profiles.yml KHÔNG để trong repo — xem README_dbt.md)
+profile: 'dbt_logistics'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  dbt_logistics:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table
