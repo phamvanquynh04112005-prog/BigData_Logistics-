@@ -24,6 +24,7 @@ ROUTES_PATH = "data/simulated/Dim_Route.csv"
 DATES_PATH = "data/simulated/Dim_Date.csv"
 
 
+# Đọc bốn dimension từ các vị trí S3A và local đã quy định.
 def read_dimensions(spark: SparkSession) -> tuple[DataFrame, DataFrame, DataFrame, DataFrame]:
     """Read Task 3 dimensions from their specified S3A/local locations."""
     csv_reader = spark.read.option("header", "true").option("inferSchema", "true")
@@ -34,17 +35,20 @@ def read_dimensions(spark: SparkSession) -> tuple[DataFrame, DataFrame, DataFram
     return warehouses, carriers, routes, dates
 
 
+# Kiểm tra DataFrame có đủ các cột bắt buộc trước khi xử lý.
 def _require_columns(frame: DataFrame, required: Sequence[str], name: str) -> None:
     missing = sorted(set(required) - set(frame.columns))
     if missing:
         raise ValueError(f"{name} is missing required columns: {missing}")
 
 
+# Chuẩn hoá text join bằng cách trim và gộp khoảng trắng liên tiếp.
 def _normalise_text(column: str) -> F.Column:
     """Trim and collapse internal whitespace so logically equal keys join."""
     return F.regexp_replace(F.trim(F.col(column)), r"\s+", " ")
 
 
+# Chặn dimension có khóa join trùng để tránh nhân bản shipment khi join.
 def _assert_unique_key(frame: DataFrame, key_columns: Sequence[str], name: str) -> None:
     """Fail before a join that could multiply shipment rows."""
     duplicates = frame.groupBy(*key_columns).count().filter(F.col("count") > 1).limit(1).count()
@@ -52,12 +56,14 @@ def _assert_unique_key(frame: DataFrame, key_columns: Sequence[str], name: str) 
         raise ValueError(f"{name} has duplicate join keys: {list(key_columns)}")
 
 
+# Log và xác nhận số dòng không đổi qua từng phép join.
 def _log_join_count(stage: str, before: int, after: int) -> None:
     print(f"{stage}: rows before={before}, rows after={after}")
     if before != after:
         raise RuntimeError(f"{stage} changed row count from {before} to {after}")
 
 
+# Bổ sung warehouse, route, date và carrier key cho dữ liệu Task 2.
 def add_foreign_keys(
     cleaned: DataFrame,
     warehouses: DataFrame,
@@ -139,6 +145,7 @@ def add_foreign_keys(
     return enriched
 
 
+# Kiểm tra bốn khóa ngoại đều có giá trị sau khi enrich.
 def verify_foreign_keys(enriched: DataFrame) -> None:
     """Validate lookup coverage after all Task 3 operations."""
     nulls = enriched.agg(
@@ -157,6 +164,7 @@ def verify_foreign_keys(enriched: DataFrame) -> None:
     print("Task 3 verification passed.")
 
 
+# Điều phối job Task 3 và tuỳ chọn kiểm tra coverage khóa ngoại.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify", action="store_true", help="fail if any generated foreign key is null")

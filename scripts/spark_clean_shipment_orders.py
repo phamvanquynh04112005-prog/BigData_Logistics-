@@ -36,6 +36,7 @@ SOURCE_TO_CLEAN = {
 }
 
 
+# Đọc bảng đơn hàng raw từ MinIO với encoding tương thích Spark.
 def read_orders(spark: SparkSession) -> DataFrame:
     """Read the raw CSV through S3A while preserving Latin-1 characters."""
     return (
@@ -48,6 +49,7 @@ def read_orders(spark: SparkSession) -> DataFrame:
     )
 
 
+# Chọn các cột cần thiết, chuẩn hoá tên và parse thời điểm đặt hàng.
 def clean_orders(source: DataFrame) -> DataFrame:
     """Rename Task 2 fields to snake_case and parse the order timestamp."""
     missing_columns = sorted(set(SOURCE_TO_CLEAN) - set(source.columns))
@@ -60,6 +62,7 @@ def clean_orders(source: DataFrame) -> DataFrame:
     return selected.withColumn("order_date", F.to_timestamp("order_date_raw", DATE_FORMAT))
 
 
+# Tính số null của từng cột bằng một phép tổng hợp Spark duy nhất.
 def null_counts(frame: DataFrame, columns: Iterable[str]) -> dict[str, int]:
     """Return one null count per column with one Spark aggregation job."""
     aggregates = [
@@ -70,6 +73,7 @@ def null_counts(frame: DataFrame, columns: Iterable[str]) -> dict[str, int]:
     return {column: int(result[column] or 0) for column in columns}
 
 
+# In các chỉ số chất lượng dữ liệu và trả về số lỗi parse ngày.
 def log_data_quality(cleaned: DataFrame) -> int:
     """Log nulls for every cleansed field and return date parse failures."""
     counts = null_counts(cleaned, cleaned.columns)
@@ -86,6 +90,7 @@ def log_data_quality(cleaned: DataFrame) -> int:
     return parse_failures
 
 
+# Đối chiếu kích thước nguồn và kết quả parse với các giá trị đã biết.
 def verify_source(source: DataFrame, parse_failures: int) -> None:
     """Validate the known source shape and that parsing produced no new nulls."""
     source_rows = source.count()
@@ -105,6 +110,7 @@ def verify_source(source: DataFrame, parse_failures: int) -> None:
     print("Task 2 verification passed.")
 
 
+# Điều phối job Task 2 và tuỳ chọn kiểm tra dữ liệu thật.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

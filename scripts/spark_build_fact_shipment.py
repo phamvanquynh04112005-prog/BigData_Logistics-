@@ -48,12 +48,14 @@ REQUIRED_TASK3_COLUMNS = (
 )
 
 
+# Kiểm tra đầu vào Task 3 chứa toàn bộ trường cần để lập Fact_Shipment.
 def _require_columns(frame: DataFrame, required: Sequence[str]) -> None:
     missing = sorted(set(required) - set(frame.columns))
     if missing:
         raise ValueError(f"Task 3 DataFrame is missing required columns: {missing}")
 
 
+# Tính chỉ số nghiệp vụ và chiếu đúng schema 12 cột của Fact_Shipment.
 def build_fact_shipment(enriched: DataFrame) -> DataFrame:
     """Calculate Task 4 fields and project the DDL's 12-column schema.
 
@@ -81,6 +83,7 @@ def build_fact_shipment(enriched: DataFrame) -> DataFrame:
     )
 
 
+# Phát hiện shipment_id trùng mà không tự ý loại bỏ dữ liệu.
 def log_duplicate_shipment_ids(fact: DataFrame) -> int:
     """Log duplicate shipment IDs for the team without silently dropping rows."""
     duplicate_groups = fact.groupBy("shipment_id").count().filter(F.col("count") > 1)
@@ -93,6 +96,7 @@ def log_duplicate_shipment_ids(fact: DataFrame) -> int:
     return duplicate_group_count
 
 
+# Xác nhận thứ tự schema DDL và tính duy nhất của khóa chính shipment_id.
 def verify_fact_shipment(fact: DataFrame) -> None:
     """Assert the Task 4 projection has the DDL column order and unique PK."""
     if tuple(fact.columns) != FACT_COLUMNS:
@@ -102,6 +106,7 @@ def verify_fact_shipment(fact: DataFrame) -> None:
     print("Task 4 verification passed.")
 
 
+# Điều phối job Task 4 và tuỳ chọn kiểm tra Fact_Shipment.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

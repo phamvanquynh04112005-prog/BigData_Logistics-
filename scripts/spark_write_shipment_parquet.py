@@ -39,6 +39,7 @@ CURATED_PATH = "s3a://curated/fact_shipment/"
 CLEANSED_OUTPUT_PARTITIONS = 8
 
 
+# Thiết lập bộ đệm S3A tương thích Windows cho thao tác ghi MinIO.
 def configure_s3a_write_buffer(spark: SparkSession) -> None:
     """Use a project-local temporary directory for S3A's buffered writes.
 
@@ -53,6 +54,7 @@ def configure_s3a_write_buffer(spark: SparkSession) -> None:
     hadoop_conf.set("fs.s3a.fast.upload.buffer", "bytebuffer")
 
 
+# Tạo bucket MinIO khi chưa tồn tại, an toàn cho các lần chạy lại.
 def create_bucket_if_missing(bucket: str) -> None:
     """Create a MinIO bucket idempotently through its S3-compatible API."""
     client = boto3.client(
@@ -73,12 +75,14 @@ def create_bucket_if_missing(bucket: str) -> None:
         print(f"Created bucket '{bucket}'.")
 
 
+# Đảm bảo hai zone cleansed và curated sẵn sàng trước khi ghi.
 def create_output_buckets() -> None:
     """Ensure the Task 5 cleansed and curated zones exist before writing."""
     create_bucket_if_missing(CLEANSED_BUCKET)
     create_bucket_if_missing(CURATED_BUCKET)
 
 
+# Lập lại DataFrame đầu ra Task 2 và Task 4 cho job lưu trữ.
 def build_task_outputs(spark: SparkSession) -> tuple[DataFrame, DataFrame]:
     """Build the existing Task 2 and Task 4 DataFrames without changing them."""
     cleansed = clean_orders(read_orders(spark))
@@ -86,6 +90,7 @@ def build_task_outputs(spark: SparkSession) -> tuple[DataFrame, DataFrame]:
     return cleansed, build_fact_shipment(enriched)
 
 
+# Ghi dữ liệu cleansed thành số file Parquet nhỏ gọn.
 def write_cleansed_parquet(cleansed: DataFrame, mode: str) -> None:
     """Persist the Task 2 output as a compact set of Parquet files."""
     (
@@ -95,6 +100,7 @@ def write_cleansed_parquet(cleansed: DataFrame, mode: str) -> None:
     )
 
 
+# Ghi Fact_Shipment phân vùng theo tháng giao hàng và kho.
 def write_curated_parquet(fact: DataFrame, mode: str) -> None:
     """Persist Fact_Shipment partitioned by month and warehouse.
 
@@ -115,6 +121,7 @@ def write_curated_parquet(fact: DataFrame, mode: str) -> None:
     )
 
 
+# Tạo client S3 để kiểm tra output được Spark ghi vào MinIO.
 def minio_client():
     """Return a client for inspecting Task 5 outputs after Spark writes them."""
     return boto3.client(
@@ -126,6 +133,7 @@ def minio_client():
     )
 
 
+# Đếm số file Parquet và số thư mục phân vùng tại một đường dẫn MinIO.
 def output_storage_counts(path: str) -> tuple[int, int]:
     """Count Parquet objects and Fact partition directories in MinIO."""
     parsed = urlparse(path)
@@ -143,6 +151,7 @@ def output_storage_counts(path: str) -> tuple[int, int]:
     return file_count, len(partitions)
 
 
+# Đọc lại Parquet và xác nhận số dòng không bị mất so với nguồn.
 def verify_round_trip(source: DataFrame, path: str, label: str, spark: SparkSession) -> None:
     """Read a written dataset back and assert its row count is unchanged."""
     source_count = source.count()
@@ -154,6 +163,7 @@ def verify_round_trip(source: DataFrame, path: str, label: str, spark: SparkSess
     print(f"{label} round-trip passed: {written_count} rows.")
 
 
+# Điều phối tạo bucket, ghi hai zone và tuỳ chọn round-trip verification.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
