@@ -48,6 +48,7 @@ EVENT_SCHEMA = T.StructType(
 )
 
 
+# Khởi tạo Spark với đồng thời connector Kafka và cấu hình S3A MinIO.
 def create_streaming_spark_session() -> SparkSession:
     """Create one session with both the MinIO and Kafka connector packages."""
     s3a_package = f"org.apache.hadoop:hadoop-aws:{HADOOP_AWS_VERSION}"
@@ -69,6 +70,7 @@ def create_streaming_spark_session() -> SparkSession:
     )
 
 
+# Đảm bảo bucket curated tồn tại trước khi streaming ghi output/checkpoint.
 def ensure_curated_bucket() -> None:
     """Create the Task 6 destination bucket when it does not yet exist."""
     client = boto3.client(
@@ -87,6 +89,7 @@ def ensure_curated_bucket() -> None:
         print(f"Created bucket '{CURATED_BUCKET}'.")
 
 
+# Parse sự kiện Kafka và tổng hợp event type theo kho trong cửa sổ một phút.
 def build_windowed_events(spark: SparkSession):
     """Parse Kafka JSON and count event types by warehouse in one-minute windows."""
     kafka_events = (
@@ -120,6 +123,7 @@ def build_windowed_events(spark: SparkSession):
     )
 
 
+# Khởi chạy sink console để demo hoặc Parquet để lưu kết quả cửa sổ hoàn tất.
 def start_query(windowed_events, sink: str):
     """Start the requested debug or persistent output sink."""
     ensure_curated_bucket()
@@ -132,6 +136,7 @@ def start_query(windowed_events, sink: str):
     return writer.outputMode("append").format("parquet").option("path", PARQUET_PATH).start()
 
 
+# Điều phối Structured Streaming và dừng query/Spark an toàn khi ngắt.
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sink", choices=("console", "parquet"), default="console")

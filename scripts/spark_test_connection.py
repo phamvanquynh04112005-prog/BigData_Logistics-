@@ -38,6 +38,7 @@ WAREHOUSES_PATH = "s3a://raw/dim_warehouse/Dim_Warehouse.csv"
 CARRIERS_PATH = "s3a://raw/dim_carrier/Dim_Carrier.csv"
 
 
+# Khởi tạo Spark cục bộ với cấu hình S3A để truy cập MinIO.
 def create_spark_session() -> SparkSession:
     """Create a local Spark session configured for MinIO's S3-compatible API."""
     return (
@@ -54,6 +55,7 @@ def create_spark_session() -> SparkSession:
     )
 
 
+# Đọc CSV có header và giữ nguyên các ký tự Latin-1 của dữ liệu nguồn.
 def read_csv(spark: SparkSession, path: str):
     """Read a headered CSV while retaining the source's Latin-1 characters."""
     return (
@@ -64,6 +66,7 @@ def read_csv(spark: SparkSession, path: str):
     )
 
 
+# Chạy kiểm tra kết nối và khả năng đọc ba nguồn raw thiết yếu.
 def main() -> None:
     spark = create_spark_session()
     spark.sparkContext.setLogLevel("WARN")
