@@ -1,0 +1,3 @@
+shipment_id,route_key,warehouse_key,scheduled_time,sales,profit,order_year,order_month,order_day_of_week
+DEMO-WH-001,RT016,WH018,4,314.64,91.25,2018,1,2
+DEMO-WH-002,RT010,WH005,2,129.99,22.10,2017,8,4

@@ -21,5 +21,13 @@ Thumbs.db
 logistics.duckdb
 dbt_logistics/target/
 dbt_logistics/logs/
+
 dbt_logistics/profiles.yml
 dbt_logistics/.user.yml
+
+
+# ML artifacts (có thể tái sinh từ raw data)
+analytics/local_ml/artifacts/
+analytics/local_ml/warehouse_artifacts/
+analytics/local_ml/warehouse_predictions.csv
+analytics/route_recommender/warehouse_route_recommendations.csv
