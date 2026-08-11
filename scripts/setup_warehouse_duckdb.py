@@ -1,6 +1,7 @@
 """
 Dựng warehouse DuckDB thật (local) và nạp 4 dimension đã có sẵn.
-Fact_Shipment KHÔNG nạp ở đây — chờ Khang bàn giao dữ liệu đã làm sạch.
+Fact_Shipment không nạp ở đây; dùng load_fact_shipment_duckdb.py để lấy
+curated Parquet do pipeline PySpark tạo trên MinIO.
 
 Cách chạy (từ thư mục gốc repo):
     pip install duckdb --break-system-packages
@@ -72,6 +73,6 @@ for table_name, filename in tables_files:
     print(f"✅ Đã nạp {count} dòng vào {table_name}")
 
 print(f"\nWarehouse local đã sẵn sàng tại: {DB_PATH}")
-print("Fact_Shipment CHƯA được tạo — sẽ thêm khi có dữ liệu đã làm sạch từ Khang.")
+print("Tiếp theo: chạy scripts/load_fact_shipment_duckdb.py để nạp curated Parquet từ MinIO.")
 
 con.close()

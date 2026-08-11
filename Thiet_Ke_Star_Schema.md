@@ -40,7 +40,9 @@ DIM_ROUTE ---(route_key)--- FACT_SHIPMENT ---(warehouse_key)--- DIM_WAREHOUSE
 ### 3.1 Fact_Shipment (bảng trung tâm)
 
 **Grain:** 1 dòng = 1 order item.
-**Trạng thái:** Đã build và nạp 180.519 dòng vào warehouse DuckDB; job BigQuery nằm tại `scripts/load_bigquery.py`.
+**Trạng thái:** PySpark đã build 180.519 dòng vào curated Parquet trên MinIO;
+`scripts/load_fact_shipment_duckdb.py` nạp nguyên kết quả này vào DuckDB và
+không tính lại business logic bằng SQL.
 
 | Cột | Kiểu | PK/FK | Lấy từ (nguồn) |
 |---|---|---|---|
@@ -117,7 +119,7 @@ DIM_ROUTE ---(route_key)--- FACT_SHIPMENT ---(warehouse_key)--- DIM_WAREHOUSE
 
 ## 5. Trạng thái triển khai
 
-- [x] Nạp `Fact_Shipment` local: 180.519 dòng, đủ 4 khóa ngoại.
+- [x] Nạp `Fact_Shipment` từ curated Parquet của PySpark: 180.519 dòng, đủ 4 khóa ngoại.
 - [x] Viết DDL chính thức cho DuckDB/PostgreSQL và BigQuery.
 - [x] Setup dbt staging → marts và các test `not_null`, `unique`, `relationships`, `accepted_values`.
 - [x] Xây `sla_monthly` dưới dạng view.

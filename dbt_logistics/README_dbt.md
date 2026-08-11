@@ -61,8 +61,9 @@ dbt test
   (`Dim_Carrier`, `Dim_Warehouse`, `Dim_Route`, `Dim_Date`, `Fact_Shipment`)
   — dùng `ddl_bigquery.sql` hoặc `ddl_duckdb_postgres.sql` để tạo trước,
   rồi nạp dữ liệu vào.
-- DuckDB local hiện có đủ `Fact_Shipment` 180.519 dòng. Có thể tái tạo bằng
-  `scripts/load_fact_shipment_duckdb.py`.
+- DuckDB local hiện có đủ `Fact_Shipment` 180.519 dòng. Loader
+  `scripts/load_fact_shipment_duckdb.py` lấy đúng Parquet do PySpark ghi tại
+  `s3a://curated/fact_shipment/`; không dựng lại Fact từ CSV raw bằng SQL.
 - Để nạp BigQuery, cài `google-cloud-bigquery`, đăng nhập Application Default
   Credentials và chạy:
   ```bash
