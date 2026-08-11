@@ -4,40 +4,52 @@ Vai trò: Platform/Orchestration Engineer — Cường (Đồ án 8: Chuỗi cun
 
 Điều phối toàn bộ luồng end-to-end:
   ingest batch (MinIO) -> build dims -> init warehouse
-    -> Spark xử lý Fact_Shipment (Khang, đã hoàn thành 7 task) -> load fact
+    -> [check Fact_Shipment đã có trên MinIO chưa] -> load fact
     -> dbt (staging -> marts) -> dbt test -> refresh dashboard
 
-Cập nhật so với bản trước:
-  - Khang đã bàn giao xong Task 1-7 (xem DuyKhang.md, HANDOFF_ROLE2_TO_ROLE3.md).
-    File placeholder cũ `spark_batch_fact_shipment.py` không còn tồn tại, được thay
-    bằng 6 script thật: spark_test_connection.py, spark_clean_shipment_orders.py,
-    spark_generate_shipment_foreign_keys.py, spark_build_fact_shipment.py,
-    spark_write_shipment_parquet.py, spark_streaming_shipment.py.
-  - `spark_write_shipment_parquet.py` tự chạy toàn bộ chuỗi Task 2->3->4->5
-    (đọc raw -> làm sạch -> sinh khóa -> build Fact -> ghi Parquet cleansed + curated
-    lên MinIO), nên DAG chỉ cần gọi đúng 1 script này, không cần tách nhiều task.
-  - Fact_Shipment được Khang ghi thẳng lên MinIO tại s3a://curated/fact_shipment/
-    (KHÔNG phải file local data/curated/fact_shipment.parquet như bản cũ), nên
-    `load_fact_to_warehouse.py` đã được sửa lại để đọc qua MinIO bằng DuckDB
-    httpfs extension thay vì đọc file Parquet local — xem file đó để biết chi tiết.
+CẬP NHẬT QUAN TRỌNG (đã xác nhận bằng cách chạy thật ngày 11/08/2026):
+  - Container `apache/airflow:2.9.3` KHÔNG cài PySpark/Java (chỉ có các gói khai báo
+    trong _PIP_ADDITIONAL_REQUIREMENTS của docker-compose.yml: duckdb, boto3, pandas,
+    dbt-core, dbt-duckdb, kafka-python — không có pyspark).
+    Xác nhận bằng: `docker exec -it airflow-scheduler python -c "import pyspark"`
+    -> ModuleNotFoundError.
+  - Vì vậy task chạy PySpark (spark_write_shipment_parquet.py — Khang, xử lý
+    Task 2-3-4-5: làm sạch -> sinh khóa -> build Fact -> ghi Parquet) KHÔNG được
+    Airflow tự động chạy trong container nữa. Thay vào đó:
 
-Ghi chú vận hành quan trọng:
-  - Các script Spark của Khang hard-code MINIO_ENDPOINT = "http://localhost:9000"
-    (xem scripts/spark_test_connection.py) và được thiết kế để chạy bằng venv
-    ngoài host (README của Khang: "Run from the repository root ... venv\\Scripts\\python").
-    Nếu chạy task Spark này TỪ BÊN TRONG container airflow-scheduler, "localhost"
-    sẽ không trỏ tới container minio -> cần đổi thành "http://minio:9000" hoặc chạy
-    job Spark thủ công ngoài host trước khi trigger DAG. DAG hiện để task này chạy
-    ngay trên host qua BashOperator giả định Airflow được setup để gọi được venv host
-    (xem ghi chú tại task spark_build_fact_shipment bên dưới) — cần xác nhận lại với
-    Khang/Cường cách môi trường đang chạy job Spark trước khi coi task này là chạy
-    "trong container" hay "ngoài host".
+      **BẮT BUỘC chạy TAY job Spark trên HOST (venv có Java 17 + pyspark) TRƯỚC
+      khi trigger DAG này:**
+
+          cd <repo>
+          venv\\Scripts\\activate
+          python scripts\\spark_write_shipment_parquet.py --mode overwrite --verify
+
+      Job này ghi kết quả lên MinIO tại s3a://cleansed/shipment_orders/ và
+      s3a://curated/fact_shipment/. Đã xác nhận chạy được trên Windows với venv
+      cài từ requirements.txt (có sẵn pyspark==4.2.0) + `pip install duckdb`,
+      KHÔNG cần winutils.exe trong lần chạy xác nhận gần nhất.
+
+  - DAG bên dưới thay task Spark cũ bằng task `check_fact_shipment_ready`: chỉ
+    KIỂM TRA xem Fact Parquet đã có trên MinIO chưa (đọc thử qua DuckDB httpfs,
+    không xử lý gì). Nếu chưa có -> SKIP nhánh Fact (giữ DAG xanh cho phần dim),
+    kèm thông báo rõ trong log là cần chạy tay script Spark trên host trước.
+  - Khi lên GCP thật: bước "chạy tay trên host" này có thể thay bằng
+    DataprocSubmitJobOperator để Composer tự submit job PySpark lên cluster
+    Dataproc thật — lúc đó không còn giới hạn môi trường container nữa.
+
+Ghi chú khác (giữ nguyên từ bản trước):
+  - load_fact_to_warehouse.py đọc Fact từ MinIO qua DuckDB httpfs extension
+    (KHÔNG phải file local), khớp đúng nơi Khang ghi output.
   - Khi chuyển thật sự lên GCP: chỉ đổi endpoint MinIO -> GCS, DuckDB -> BigQuery
     trong Airflow Connections/Variables, code nghiệp vụ giữ nguyên.
 """
 from __future__ import annotations
 
+import os
+
 import pendulum
+from airflow.decorators import task
+from airflow.exceptions import AirflowSkipException
 from airflow.models.dag import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.empty import EmptyOperator
@@ -94,22 +106,51 @@ with DAG(
         bash_command=f"cd {REPO_DIR} && python scripts/setup_warehouse_duckdb.py",
     )
 
-    # ---------- 4. PySpark batch: làm sạch -> sinh khóa -> build Fact -> ghi Parquet ----------
-    # Thay cho task placeholder cũ (spark_batch_fact_shipment.py, đã bị xóa).
-    # spark_write_shipment_parquet.py tự chạy toàn bộ chuỗi Task 2-3-4-5 của Khang
-    # và ghi kết quả lên MinIO (s3a://cleansed/..., s3a://curated/fact_shipment/).
-    spark_build_fact_shipment = BashOperator(
-        task_id="spark_build_fact_shipment",
-        bash_command=(
-            f"cd {REPO_DIR} && "
-            "python scripts/spark_write_shipment_parquet.py --mode overwrite --verify"
-        ),
-    )
+    # ---------- 4. KIỂM TRA Fact_Shipment đã có trên MinIO chưa ----------
+    # KHÔNG chạy PySpark ở đây (container thiếu pyspark/Java). Job Spark thật
+    # (scripts/spark_write_shipment_parquet.py) phải được chạy TAY trên host
+    # trước khi trigger DAG — xem docstring đầu file. Task này chỉ đọc thử
+    # Parquet qua DuckDB httpfs để xác nhận dữ liệu đã sẵn sàng chưa.
+    @task(task_id="check_fact_shipment_ready")
+    def check_fact_shipment_ready():
+        import duckdb
+
+        minio_endpoint = os.environ.get("MINIO_ENDPOINT", "http://minio:9000")
+        minio_host = minio_endpoint.replace("http://", "").replace("https://", "")
+
+        con = duckdb.connect(":memory:")
+        con.execute("INSTALL httpfs;")
+        con.execute("LOAD httpfs;")
+        con.execute(f"SET s3_endpoint='{minio_host}';")
+        con.execute("SET s3_access_key_id='minioadmin';")
+        con.execute("SET s3_secret_access_key='minioadmin123';")
+        con.execute("SET s3_url_style='path';")
+        con.execute("SET s3_use_ssl=false;")
+
+        fact_path = "s3://curated/fact_shipment/**/*.parquet"
+        try:
+            count = con.execute(
+                f"SELECT COUNT(*) FROM read_parquet('{fact_path}')"
+            ).fetchone()[0]
+        except Exception as exc:
+            raise AirflowSkipException(
+                f"Fact_Shipment chưa có trên MinIO ({fact_path}): {exc}. "
+                "Chạy tay 'python scripts/spark_write_shipment_parquet.py "
+                "--mode overwrite --verify' bằng venv host TRƯỚC khi trigger DAG."
+            )
+
+        if count == 0:
+            raise AirflowSkipException(
+                f"{fact_path} tồn tại nhưng không có dòng nào — bỏ qua nhánh Fact."
+            )
+
+        print(f"Fact_Shipment sẵn sàng trên MinIO: {count} dòng.")
 
     # ---------- 5. Nạp Fact_Shipment (đọc từ MinIO) vào warehouse ----------
     load_fact_to_warehouse = BashOperator(
         task_id="load_fact_to_warehouse",
         bash_command=f"cd {REPO_DIR} && python scripts/load_fact_to_warehouse.py",
+        trigger_rule="all_done",  # chạy dù task check ở trên bị skip, để lộ log rõ ràng
     )
 
     # ---------- 6. dbt: staging (4 dim) + shipment + marts ----------
@@ -155,6 +196,6 @@ with DAG(
     ingest_batch_to_datalake >> init_warehouse
 
     init_warehouse >> dbt_run_staging
-    init_warehouse >> spark_build_fact_shipment >> load_fact_to_warehouse
+    init_warehouse >> check_fact_shipment_ready() >> load_fact_to_warehouse
 
     [dbt_run_staging, load_fact_to_warehouse] >> dbt_run_marts >> dbt_test >> refresh_dashboard >> end
