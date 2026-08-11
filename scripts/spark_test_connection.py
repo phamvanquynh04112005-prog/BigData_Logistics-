@@ -10,15 +10,23 @@ cache on the first run; they are then reused by subsequent runs.
 """
 
 import os
+import sys
 from pathlib import Path
 
 # PySpark on Windows invokes winutils.exe while distributing Maven-resolved
 # JARs. The setup below is ignored on Linux/macOS and lets this repository use
 # a project-local runtime helper rather than a machine-wide Hadoop install.
 WINUTILS_HOME = Path(__file__).resolve().parents[1] / "venv" / "hadoop"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+IVY_CACHE_DIR = PROJECT_ROOT / ".ivy2"
 if (WINUTILS_HOME / "bin" / "winutils.exe").exists():
     os.environ.setdefault("HADOOP_HOME", str(WINUTILS_HOME))
     os.environ["PATH"] = f"{WINUTILS_HOME / 'bin'}{os.pathsep}{os.environ['PATH']}"
+
+# Keep the driver and workers on the active virtual environment. PySpark's
+# Windows launcher otherwise searches for a Unix-style ``python3`` executable.
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
 from pyspark.sql import SparkSession
 
@@ -28,6 +36,29 @@ HADOOP_AWS_VERSION = "3.5.0"
 # Hadoop 3.5 resolves its compatible AWS SDK v2 bundle transitively. Adding
 # the older v1 aws-java-sdk-bundle explicitly would create a classpath conflict.
 S3A_PACKAGES = f"org.apache.hadoop:hadoop-aws:{HADOOP_AWS_VERSION}"
+
+
+def _cached_s3a_classpath() -> str | None:
+    """Use already-resolved S3A jars directly on Windows when available.
+
+    Adding Maven packages through ``spark.jars.packages`` makes Spark copy the
+    jars via Hadoop's local filesystem, which unnecessarily requires
+    ``winutils.exe``. In local mode, putting the resolved jars directly on both
+    classpaths avoids that Windows-only dependency.
+    """
+    patterns = (
+        "org.apache.hadoop_hadoop-aws-*.jar",
+        "software.amazon.awssdk_bundle-*.jar",
+        "software.amazon.s3.analyticsaccelerator_analyticsaccelerator-s3-*.jar",
+        "org.wildfly.openssl_wildfly-openssl-*.jar",
+    )
+    jars = []
+    for pattern in patterns:
+        matches = sorted((IVY_CACHE_DIR / "jars").glob(pattern))
+        if not matches:
+            return None
+        jars.append(matches[-1])
+    return os.pathsep.join(str(jar) for jar in jars)
 
 MINIO_ENDPOINT = "http://localhost:9000"
 MINIO_ACCESS_KEY = "minioadmin"
@@ -41,18 +72,25 @@ CARRIERS_PATH = "s3a://raw/dim_carrier/Dim_Carrier.csv"
 # Khởi tạo Spark cục bộ với cấu hình S3A để truy cập MinIO.
 def create_spark_session() -> SparkSession:
     """Create a local Spark session configured for MinIO's S3-compatible API."""
-    return (
+    builder = (
         SparkSession.builder.appName(APP_NAME)
         .master("local[*]")
-        # Resolves hadoop-aws and the AWS SDK bundle on the first execution.
-        .config("spark.jars.packages", S3A_PACKAGES)
+        .config("spark.jars.ivy", str(IVY_CACHE_DIR))
         .config("spark.hadoop.fs.s3a.endpoint", MINIO_ENDPOINT)
         .config("spark.hadoop.fs.s3a.access.key", MINIO_ACCESS_KEY)
         .config("spark.hadoop.fs.s3a.secret.key", MINIO_SECRET_KEY)
         .config("spark.hadoop.fs.s3a.path.style.access", "true")
         .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
-        .getOrCreate()
     )
+    cached_classpath = _cached_s3a_classpath()
+    if cached_classpath:
+        builder = builder.config("spark.driver.extraClassPath", cached_classpath).config(
+            "spark.executor.extraClassPath", cached_classpath
+        )
+    else:
+        # Resolve hadoop-aws and the AWS SDK bundle on the first execution.
+        builder = builder.config("spark.jars.packages", S3A_PACKAGES)
+    return builder.getOrCreate()
 
 
 # Đọc CSV có header và giữ nguyên các ký tự Latin-1 của dữ liệu nguồn.

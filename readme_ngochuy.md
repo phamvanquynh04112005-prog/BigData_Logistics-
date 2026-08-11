@@ -15,7 +15,7 @@ cho việc tích hợp, kiểm thử cũng như trình diễn đồ án.
 
 - Thiết kế chi tiết star schema cho bài toán logistics.
 - Xây dựng warehouse gồm 4 bảng dimension và 1 bảng fact.
-- Nạp `Fact_Shipment` vào DuckDB.
+- Nạp `Fact_Shipment` từ Parquet curated do PySpark ghi trên MinIO vào DuckDB.
 - Xây dựng dbt models theo luồng `sources → staging → marts`.
 - Viết data tests cho khóa chính, khóa ngoại và dữ liệu nghiệp vụ.
 - Xây dựng view SLA giao hàng theo tháng.
@@ -34,10 +34,12 @@ cho việc tích hợp, kiểm thử cũng như trình diễn đồ án.
 | `route_performance` | 23 dòng |
 | `sla_monthly` | 37 tháng |
 | Kết quả dbt build | 35/35 PASS |
+| Sai lệch DuckDB ↔ curated Parquet | 0 dòng |
 
 `Fact_Shipment` đã được kiểm tra tính duy nhất của `shipment_id`, khóa ngoại
 không null và quan hệ hợp lệ với cả 4 dimension. Tỷ lệ giao đúng hạn toàn bộ dữ
-liệu vào khoảng **45,17%**.
+liệu vào khoảng **45,17%**. Đối chiếu toàn bộ 12 cột theo `shipment_id` giữa
+DuckDB và curated Parquet cho kết quả **0 sai lệch**, gồm cả `carrier_key`.
 
 ## 4. Thiết kế star schema
 
@@ -109,10 +111,24 @@ Các kiểm tra hiện có bao gồm:
 - DuckDB
 - dbt-core và dbt-duckdb
 - File dữ liệu nguồn trong `data/raw` và `data/simulated`
+- MinIO đang chạy và có Parquet tại `s3a://curated/fact_shipment/`
 
 Các lệnh dưới đây được chạy từ thư mục gốc của repository.
 
 ## 7. Cách dựng warehouse từ đầu
+
+### Bước 0 — Chuẩn bị curated Parquet bằng pipeline PySpark
+
+Khởi động MinIO và bảo đảm dữ liệu raw/dimensions đã được upload theo hướng dẫn
+của nhóm. Sau đó chạy job storage của Khang:
+
+```powershell
+docker compose up -d minio
+.\.venv\Scripts\python.exe scripts\spark_write_shipment_parquet.py --verify
+```
+
+Job PySpark này tạo `s3a://curated/fact_shipment/`. Đây là nguồn duy nhất được
+loader warehouse sử dụng cho `Fact_Shipment`.
 
 ### Bước 1 — Nạp 4 dimensions
 
@@ -129,15 +145,19 @@ Kết quả tạo file `logistics.duckdb` và nạp:
 
 ### Bước 2 — Nạp Fact_Shipment
 
+Đảm bảo Khang đã chạy pipeline PySpark và MinIO chứa output curated tại
+`s3a://curated/fact_shipment/`, sau đó chạy:
+
 ```powershell
 .\.venv\Scripts\python.exe scripts\load_fact_shipment_duckdb.py
 ```
 
-Job này có thể chạy lại an toàn. Dữ liệu chỉ được commit sau khi vượt qua kiểm
-tra số dòng, khóa chính và khóa ngoại. Kết quả mong đợi:
+Job tải đúng Parquet do PySpark tạo, không tính lại Fact bằng SQL. Job có thể
+chạy lại an toàn; dữ liệu chỉ được commit sau khi vượt qua kiểm tra số dòng,
+khóa chính và cả 4 khóa ngoại. Kết quả mong đợi:
 
 ```text
-Loaded Fact_Shipment successfully: 180,519 rows
+Loaded Fact_Shipment from curated Parquet: 180,519 rows
 ```
 
 ### Bước 3 — Kiểm tra kết nối dbt
@@ -240,6 +260,8 @@ ORDER BY avg_delay_hours DESC;
 - Các file BigQuery trong repository chỉ là phương án dự phòng, không cần chạy
   khi demo bằng DuckDB.
 - Không commit `logistics.duckdb`, credentials hoặc `profiles.yml` lên Git.
+- Không dùng DuckDB SQL để dựng lại Fact từ CSV raw. Business logic thuộc pipeline
+  PySpark; warehouse chỉ nạp output Parquet ở curated zone.
 - Nên chạy `dbt build` sau mỗi lần thay đổi dữ liệu hoặc model để vừa cập nhật
   marts vừa kiểm tra chất lượng dữ liệu.
 

@@ -23,3 +23,5 @@ dbt_logistics/target/
 dbt_logistics/logs/
 dbt_logistics/profiles.yml
 dbt_logistics/.user.yml
+.ivy2/
+.spark-s3a-buffer/
