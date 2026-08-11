@@ -1,0 +1,6 @@
+dbt_logistics:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: '/opt/airflow/repo/logistics.duckdb'
