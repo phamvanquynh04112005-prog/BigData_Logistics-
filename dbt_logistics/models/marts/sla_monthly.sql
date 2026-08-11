@@ -1,5 +1,7 @@
 -- Mart: tỷ lệ giao hàng đúng hạn (SLA) theo từng tháng
 -- Dùng trực tiếp cho dashboard của Mong (vai trò Analytics)
+{{ config(materialized='view') }}
+
 select
     d.year,
     d.month,

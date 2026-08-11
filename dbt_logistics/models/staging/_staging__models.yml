@@ -27,25 +27,35 @@ models:
         tests: [not_null, unique]
       - name: carrier_key
         tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('stg_carrier')
                 field: carrier_id
       - name: warehouse_key
         tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('stg_warehouse')
                 field: warehouse_id
       - name: route_key
         tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('stg_route')
                 field: route_id
       - name: date_key
         tests:
+          - not_null
           - relationships:
               arguments:
                 to: ref('stg_date')
                 field: date_key
+      - name: on_time
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [true, false]

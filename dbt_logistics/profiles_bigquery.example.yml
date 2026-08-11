@@ -1,0 +1,14 @@
+# Copy this file outside the repository as ~/.dbt/profiles.yml, or point
+# DBT_PROFILES_DIR to its directory. Authentication uses Google ADC.
+dbt_logistics:
+  target: bigquery
+  outputs:
+    bigquery:
+      type: bigquery
+      method: oauth
+      project: "{{ env_var('GCP_PROJECT_ID') }}"
+      dataset: "{{ env_var('BIGQUERY_DATASET') }}"
+      location: "{{ env_var('BIGQUERY_LOCATION', 'US') }}"
+      threads: 4
+      job_execution_timeout_seconds: 300
+      job_retries: 1
