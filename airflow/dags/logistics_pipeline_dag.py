@@ -149,7 +149,7 @@ with DAG(
     # ---------- 5. Nạp Fact_Shipment (đọc từ MinIO) vào warehouse ----------
     load_fact_to_warehouse = BashOperator(
         task_id="load_fact_to_warehouse",
-        bash_command=f"cd {REPO_DIR} && python scripts/load_fact_to_warehouse.py",
+        bash_command=f"cd {REPO_DIR} && python scripts/load_fact_shipment_duckdb.py",
         trigger_rule="all_done",  # chạy dù task check ở trên bị skip, để lộ log rõ ràng
     )
 
