@@ -44,6 +44,25 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+  #mong sửa#
+  postgres_analytics:
+    image: postgres:16
+    container_name: postgres_analytics
+    environment:
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics123
+      POSTGRES_DB: analytics
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres_analytics
 
   # ---------------------------------------------------------------
   # Từ đây trở xuống: hạ tầng orchestration, thuộc vai trò Cường
@@ -121,3 +140,4 @@ volumes:
   minio_data:
   postgres_data:
   airflow_logs:
+  postgres_analytics_data:
