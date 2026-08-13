@@ -2,7 +2,7 @@
 
 **Vai trò:** Data Warehouse & dbt Developer
 **Người thực hiện:** Huy
-**Trạng thái hiện tại:** Đã hoàn thiện thiết kế, đủ 4 dimension và `Fact_Shipment` 180.519 dòng trong DuckDB. Toàn bộ dbt models/tests đã chạy thành công local. Repo có DDL và job nạp BigQuery; triển khai GCP cần project, dataset và Application Default Credentials của nhóm.
+**Trạng thái hiện tại:** Đã hoàn thiện thiết kế, đủ 4 dimension và `Fact_Shipment` 180.519 dòng trong DuckDB. Toàn bộ dbt models/tests đã chạy thành công local. Repo có DDL và job nạp BigQuery; triển khai GCP cần project, dataset và Application Default Credentials của nhóm. Luồng realtime theo từng shipment đã có persistence idempotent và alert `DELAYED` trong DuckDB (xem mục 6).
 
 ---
 
@@ -125,3 +125,19 @@ không tính lại business logic bằng SQL.
 - [x] Xây `sla_monthly` dưới dạng view.
 - [ ] Chạy `scripts/load_bigquery.py` bằng project/dataset và credentials GCP thật của nhóm.
 - [ ] Chạy `dbt build` với profile BigQuery của nhóm và lưu log bàn giao.
+
+---
+
+## 6. Realtime tracking và cảnh báo
+
+`scripts/spark_streaming_shipment.py` giữ nguyên `shipment_id` từ Kafka và dùng sink mặc định `duckdb` để ghi ba bảng sau:
+
+| Bảng | Grain | Mục đích |
+|---|---|---|
+| `shipment_tracking_event` | 1 dòng / `event_id` | Lịch sử event và audit metadata Kafka. |
+| `latest_shipment_tracking` | 1 dòng / `shipment_id` | Trạng thái mới nhất để tra cứu hoặc join với `Fact_Shipment`. |
+| `shipment_realtime_alert` | 1 dòng / event `DELAYED` | Alert bền vững, không phát trùng khi Spark retry micro-batch. |
+
+**Cam kết xử lý:** mỗi event hợp lệ có `event_id`, `shipment_id`, warehouse, loại event và thời điểm sẽ được checkpoint bởi Spark. Các primary key theo `event_id` loại bỏ bản ghi/alert trùng khi retry; thao tác upsert chỉ cập nhật latest khi event mới hơn theo event timestamp và Kafka offset. Vì vậy event đến trễ không thể ghi đè trạng thái mới hơn.
+
+**Ngoài phạm vi:** cam kết trên áp dụng cho event hợp lệ đã tới topic Kafka và ghi được vào DuckDB. Khả năng gửi message từ producer, Kafka/MinIO hoạt động và ổ đĩa DuckDB còn ghi được vẫn là tiền đề vận hành của hệ thống. Hướng dẫn chạy, kiểm tra và bàn giao nằm trong `HANDOFF_KHANG_TO_MONG_REALTIME.md`.
