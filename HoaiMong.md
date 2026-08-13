@@ -1,212 +1,478 @@
 # Phần 5 — Analytics/AI Engineer (Mong)
 
-Phương án open-source local theo mục 4b tài liệu đồ án (được giáo viên xác
-nhận): Dashboard → **Metabase** (thay Looker Studio); Dự đoán trễ giao hàng →
-**scikit-learn** (thay BigQuery ML); Gợi ý tuyến → **thuật toán scoring cục
-bộ** (thay Vertex AI).
+Tài liệu này là hướng dẫn bàn giao đầy đủ phần Analytics/AI. Người đọc có thể
+dùng nó để hiểu mục tiêu, dựng môi trường, chạy lại toàn bộ đầu ra và demo luồng
+realtime mà không cần sửa code của các thành viên khác.
 
-## Trạng thái
+## 1. Tổng quan phần đã hoàn thành
 
-| Hạng mục                                     | Trạng thái                                                        |
-| -------------------------------------------- | ----------------------------------------------------------------- |
-| Dashboard Metabase (7 câu hỏi + 1 dashboard) | ✅ Hoàn thành                                                     |
-| Model dự đoán trễ giao hàng (scikit-learn)   | ✅ Hoàn thành                                                     |
-| Gợi ý carrier/tuyến (scoring cục bộ)         | ✅ Hoàn thành                                                     |
-| Cảnh báo realtime (điểm cộng)                | ⬜ Chưa làm — bị chặn bởi phần Spark của Khang (xem mục Giới hạn) |
+Phần 5 sử dụng phương án open-source chạy local đã được xác nhận trong đồ án:
 
-## 1. Dashboard Metabase
+| Hạng mục | Công cụ/thuật toán | Đầu ra đã hoàn thành |
+| --- | --- | --- |
+| Dashboard phân tích | Metabase + PostgreSQL Analytics | 7 card phân tích lịch sử và 1 dashboard `Logistics Overview Dashboard`. |
+| Dự đoán trễ giao hàng | scikit-learn `LogisticRegression` | Model và bảng `shipment_risk_predictions`. |
+| Gợi ý carrier cho route | Scoring minh bạch tại local | Bảng `route_recommendations`. |
+| Cảnh báo realtime ưu tiên theo ML (điểm cộng) | Kafka + Spark của Khang + DuckDB + Python evaluator | Alert `HIGH`/`CRITICAL` trong `shipment_risk_realtime_alert`, card Metabase số 08. |
 
-7 câu hỏi SQL trong collection **"Phân tích của chúng tôi"**, ghép vào 1
-dashboard `Logistics Overview Dashboard`, dùng chung 1 filter `{{date_filter}}`
-kiểu Field Filter map vào `dim_date.full_date`:
+Luồng dữ liệu tổng quát:
 
-| #   | Tên card              | Nội dung                                                             |
-| --- | --------------------- | -------------------------------------------------------------------- |
-| 01  | Overview KPIs         | Tổng shipment, tỷ lệ đúng hạn, delay trung bình, doanh thu/lợi nhuận |
-| 02  | Delay Trend           | Xu hướng SLA theo tháng                                              |
-| 03  | Carrier Performance   | Xếp hạng carrier theo tỷ lệ đúng hạn                                 |
-| 04  | Route Performance     | Xếp hạng route theo tỷ lệ đúng hạn                                   |
-| 05  | Warehouse Performance | Xếp hạng warehouse theo tỷ lệ đúng hạn                               |
-| 06  | At Risk Shipments     | Shipment rủi ro trễ HIGH/MEDIUM từ model ML                          |
-| 07  | Route Recommendations | Carrier được gợi ý cho từng route                                    |
+```text
+Fact_Shipment / dimensions (DuckDB)
+        │
+        ├──> scikit-learn score ────────────────> shipment_risk_predictions
+        ├──> route scoring ─────────────────────> route_recommendations
+        └──> export DuckDB -> PostgreSQL ───────> Metabase dashboard
 
-**Kiến trúc:** vì Metabase không đọc trực tiếp DuckDB, dữ liệu được đẩy từ
-`logistics.duckdb` sang một Postgres riêng (`postgres_analytics`, KHÔNG dùng
-chung với Postgres metadata của Airflow) bằng script
-`analytics/metabase/export_to_postgres.py`, chạy lại mỗi khi dữ liệu nguồn
-thay đổi.
-
-Metabase là dịch vụ tự host (self-hosted) chạy trong Docker, chỉ lắng nghe ở
-`localhost:3000` trên máy đang chạy Docker — không tự động truy cập được từ
-máy khác (đúng theo yêu cầu "không up lên GCP", khác với Looker Studio vốn
-là dịch vụ web công khai). Khi demo/bảo vệ đồ án: mở máy đang chạy
-`docker compose up -d metabase` rồi trình chiếu trực tiếp `localhost:3000`,
-hoặc xuất ảnh/PDF dashboard làm bằng chứng tĩnh đưa vào báo cáo.
-
-Đã kiểm chứng: card 01 với range 1/1/2015–31/12/2018 ra đúng 180.519 dòng,
-khớp `COUNT(*)` của `Fact_Shipment`.
-
-## 2. Model dự đoán trễ giao hàng
-
-- Thuật toán: `LogisticRegression` (scikit-learn), `class_weight="balanced"`.
-- Feature: `route_key`, `warehouse_key`, `scheduled_time`, `sales`, `profit`,
-  `order_year`, `order_month`, `order_day_of_week`.
-- **Không dùng** `lead_time`, `delay_hours`, `on_time`, `Delivery Status` làm
-  feature (data leakage — đây là thông tin chỉ biết sau khi giao hàng).
-- Chia dữ liệu theo **thời gian**: 80% train / 10% validation / 10% test
-  (không random split), mô phỏng đúng bài toán dự đoán tương lai từ quá khứ.
-- Ngưỡng phân loại chọn bằng F2-score trên tập validation (ưu tiên recall,
-  ràng buộc precision ≥ 0.65), không chọn trên test.
-
-**Kết quả trên tập test (180.519 shipment):**
-
-| Metric    | Giá trị |
-| --------- | ------: |
-| ROC-AUC   |  0.7075 |
-| Accuracy  |  0.6215 |
-| Precision |  0.6193 |
-| Recall    |  0.8158 |
-| F1        |  0.7041 |
-| Threshold |    0.36 |
-
-**Phân bố rủi ro sau khi score toàn bộ warehouse:**
-
-| Risk level | Số shipment |
-| ---------- | ----------: |
-| LOW        |     107.691 |
-| MEDIUM     |      35.270 |
-| HIGH       |      37.558 |
-
-Kết quả nạp vào bảng `shipment_risk_predictions` trong `logistics.duckdb`,
-sau đó export sang Postgres cho Metabase card 06.
-
-## 3. Gợi ý carrier/tuyến
-
-Thuật toán scoring cục bộ, không dùng ML:
-
-```
-score = 70% × xác suất đúng hạn lịch sử
-      + 20% × điểm lead time (thấp hơn tốt hơn, chuẩn hoá trong nhóm candidate)
-      + 10% × điểm chi phí (nếu có; hiện dồn về 2 tiêu chí đầu vì dataset
-              chưa có shipping cost đáng tin cậy → 77,78% / 22,22%)
+Kafka producer -> Spark Streaming (Khang) -> shipment_realtime_alert
+                                              │
+shipment_risk_predictions ────────────────────┤
+                                              └──> ML priority evaluator
+                                                     -> shipment_risk_realtime_alert
+                                                     -> PostgreSQL -> Metabase card 08
 ```
 
-Với mỗi route, carrier điểm cao nhất được chọn làm gợi ý. Kết quả: **23
-recommendation** từ **138** cặp carrier-route lịch sử, nạp vào bảng
-`route_recommendations`.
+## 2. Kiến trúc và các bảng dữ liệu
 
-**Giới hạn cần nêu rõ:** dataset chỉ có 1 route cho mỗi cặp market–region,
-nên đây là "gợi ý carrier tốt nhất cho route có sẵn", chưa phải bài toán tối
-ưu chọn đường đi giữa nhiều tuyến khác nhau.
+### 2.1. DuckDB là nơi xử lý chính
 
-## 4. Cấu trúc file đã thêm
+File `logistics.duckdb` là warehouse local. Phần Mong đọc/ghi các bảng sau:
 
-```
-analytics/
-├── local_ml/
-│   ├── train_warehouse_model.py         # Train model
-│   ├── predict_warehouse_shipments.py   # Score 1 CSV
-│   ├── score_warehouse_duckdb.py        # Score toàn bộ warehouse + nạp DuckDB
-│   ├── load_predictions_duckdb.py       # Upsert prediction vào DuckDB
-│   ├── warehouse_artifacts/             # Model đã train (.joblib) — KHÔNG commit git
-│   └── sql/
-│       ├── warehouse_scoring_input.sql
-│       └── create_shipment_risk_predictions.sql
-├── route_recommender/
-│   ├── recommend_carrier.py             # Engine chấm điểm
-│   ├── build_warehouse_recommendations.py
-│   └── sql/carrier_route_performance_contract.sql
-└── metabase/
-    └── export_to_postgres.py            # Đẩy DuckDB -> Postgres cho Metabase
-```
+| Bảng | Ai tạo | Mục đích |
+| --- | --- | --- |
+| `Fact_Shipment`, `Dim_*` | Pipeline warehouse | Dữ liệu đầu vào lịch sử. |
+| `shipment_risk_predictions` | Model ML | Xác suất trễ, nhãn dự đoán và `LOW`/`MEDIUM`/`HIGH` cho mỗi shipment. |
+| `route_recommendations` | Route recommender | Một carrier được gợi ý cho mỗi route. |
+| `shipment_tracking_event` | Spark của Khang | Lịch sử event Kafka đầy đủ, có metadata audit. |
+| `latest_shipment_tracking` | Spark của Khang | Trạng thái mới nhất theo `shipment_id`. |
+| `shipment_realtime_alert` | Spark của Khang | Một alert bền vững cho mỗi event `DELAYED`. |
+| `shipment_risk_realtime_alert` | Evaluator của Mong | Alert ưu tiên sau khi join delay event với ML risk. |
 
-Ngoài ra sửa `docker-compose.yml` (chỉ **thêm**, không sửa service có sẵn):
-thêm `postgres_analytics` (Postgres riêng cho analytics, port `5433`) và
-`metabase` (port `3000`).
+### 2.2. PostgreSQL Analytics chỉ phục vụ Metabase
 
-**Không sửa code có sẵn của Quỳnh/Khang/Huy/Cường** trong toàn bộ Phần 5.
+Service `postgres_analytics` (port `5433`) là database riêng cho Metabase,
+không dùng chung với PostgreSQL metadata của Airflow. Script
+`analytics/metabase/export_to_postgres.py` copy bảng từ DuckDB sang đây mỗi khi
+nguồn thay đổi. Metabase chạy ở `http://localhost:3000`.
 
-## 5. Cách chạy lại toàn bộ trên máy khác (từ đầu)
+## 3. Chuẩn bị môi trường
 
-Giả sử đã có: Docker Desktop, Python 3.13, Java 17, và đã clone nhánh
-`hoanthanh` (có sẵn code của 4 vai trò còn lại).
+### 3.1. Điều kiện cần có
+
+- Docker Desktop đang chạy.
+- Python 3.13, Java 17.
+- Repository được clone đầy đủ và đang đứng tại thư mục gốc
+  `D:\DA\BigData_Logistics-`.
+- Dữ liệu warehouse đã được dựng trong `logistics.duckdb`. Nếu dựng trên máy
+  mới, cần có các CSV thô trong `data/raw` và `data/simulated` trước khi chạy
+  pipeline warehouse.
+
+### 3.2. Tạo môi trường Python
+
+Mở PowerShell tại thư mục gốc project:
 
 ```powershell
-# 1. Môi trường Python
+cd D:\DA\BigData_Logistics-
 python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install scikit-learn joblib psycopg2-binary sqlalchemy
+```
 
-# 2. winutils cho Spark chạy trên Windows (nếu chưa có)
+Trong phần còn lại của tài liệu, có thể dùng `python` khi môi trường `(.venv)`
+đang active. Để không phụ thuộc trạng thái activate, các lệnh mẫu luôn dùng
+`.\.venv\Scripts\python.exe`.
+
+### 3.3. Winutils cho Spark trên Windows
+
+Spark code của project tìm `winutils.exe` tại `venv\hadoop\bin` (không phải
+`.venv`). Chỉ cần làm bước này nếu máy chưa có file đó:
+
+```powershell
 mkdir venv\hadoop\bin -Force
 Invoke-WebRequest -Uri "https://github.com/cdarlint/winutils/raw/master/hadoop-3.3.6/bin/winutils.exe" -OutFile "venv\hadoop\bin\winutils.exe"
 Invoke-WebRequest -Uri "https://github.com/cdarlint/winutils/raw/master/hadoop-3.3.6/bin/hadoop.dll" -OutFile "venv\hadoop\bin\hadoop.dll"
+```
 
-# 3. Copy data thô (DataCoSupplyChainDataset.csv, Dim_*.csv) vào data/raw và data/simulated
+### 3.4. Dựng các Docker service cần cho phần Mong
 
-# 4. Dựng warehouse (việc của Quỳnh/Khang/Huy, chạy lại để tái tạo local)
+Chỉ chạy dashboard/ML/recommendation:
+
+```powershell
+docker compose up -d postgres_analytics metabase
+```
+
+Chạy demo realtime đầy đủ (cần MinIO, Kafka và ZooKeeper):
+
+```powershell
+docker compose up -d minio zookeeper kafka postgres_analytics metabase
+```
+
+Kiểm tra container:
+
+```powershell
+docker compose ps
+```
+
+Các service mong đợi là `minio`, `zookeeper`, `kafka`, `postgres_analytics` và
+`metabase`. Lần đầu kéo image Kafka có thể mất vài phút; chỉ chạy producer sau
+khi Kafka đã khởi động xong.
+
+## 4. Nếu máy mới chưa có warehouse
+
+Phần Mong không xây warehouse nguồn, nhưng cần dữ liệu đó để train/score. Sau
+khi đã đặt CSV đầu vào đúng thư mục, chạy theo thứ tự sau để tái tạo DuckDB:
+
+```powershell
 docker compose up -d minio
-python scripts\upload_to_minio.py
-python scripts\spark_clean_shipment_orders.py
-python scripts\spark_generate_shipment_foreign_keys.py
-python scripts\spark_build_fact_shipment.py
-python scripts\spark_write_shipment_parquet.py --verify
-python scripts\setup_warehouse_duckdb.py
-python scripts\load_fact_shipment_duckdb.py
+.\.venv\Scripts\python.exe scripts\upload_to_minio.py
+.\.venv\Scripts\python.exe scripts\spark_clean_shipment_orders.py
+.\.venv\Scripts\python.exe scripts\spark_generate_shipment_foreign_keys.py
+.\.venv\Scripts\python.exe scripts\spark_build_fact_shipment.py
+.\.venv\Scripts\python.exe scripts\spark_write_shipment_parquet.py --verify
+.\.venv\Scripts\python.exe scripts\setup_warehouse_duckdb.py
+.\.venv\Scripts\python.exe scripts\load_fact_shipment_duckdb.py
+```
 
-# Tạo dbt_logistics\profiles.yml (KHÔNG có sẵn trên git, mỗi máy tự tạo):
-#   dbt_logistics:
-#     target: dev
-#     outputs:
-#       dev:
-#         type: duckdb
-#         path: '../logistics.duckdb'
-#         threads: 4
+Sau đó chạy dbt để có các mart Metabase dùng:
+
+```powershell
 cd dbt_logistics
 dbt build --profiles-dir .
 cd ..
-
-# 5. Phần Mong
-python analytics\local_ml\train_warehouse_model.py
-python analytics\local_ml\score_warehouse_duckdb.py
-python analytics\route_recommender\build_warehouse_recommendations.py
-
-# 6. Metabase
-docker compose up -d postgres_analytics metabase
-python analytics\metabase\export_to_postgres.py
 ```
 
-Sau đó vào `localhost:3000`, làm setup wizard lần đầu, kết nối Postgres
-(`localhost:5433`, db/user/pass: `analytics`/`analytics`/`analytics123`),
-rồi **tạo lại thủ công 7 câu hỏi SQL** (nội dung 7 file `.sql` gốc nằm ở
-`analytics/metabase/sql/`) và dashboard — xem mục Giới hạn bên dưới về lý do
-không thể tự động hoá bước này.
+Mỗi máy mới cần tạo `dbt_logistics\profiles.yml` theo cấu hình DuckDB của
+project trước khi chạy `dbt build`.
 
-## 6. Giới hạn & rủi ro cần biết
+## 5. Chạy model dự đoán trễ giao hàng
 
-- **Dashboard/câu hỏi Metabase KHÔNG nằm trong Git.** Metabase lưu toàn bộ
-  card/dashboard trong database ứng dụng riêng của nó (embedded, bên trong
-  container). Máy khác chạy lại từ đầu sẽ có Metabase **trống**, phải tạo lại
-  7 câu hỏi thủ công theo file SQL đã lưu sẵn. Nếu muốn tự động hoá, cần dùng
-  Metabase API để import/export collection — chưa làm trong phạm vi Phần 5.
-- **Dữ liệu Metabase có thể mất nếu `docker compose down` xoá container** vì
-  `docker-compose.yml` hiện chưa gắn volume riêng cho database nội bộ của
-  Metabase. Nên dùng `docker compose stop` thay vì `down` khi tạm dừng, hoặc
-  bổ sung volume `metabase_data:/metabase.db` (việc này nên bàn với Cường vì
-  đụng tới `docker-compose.yml` chung).
-- **Cảnh báo realtime (điểm cộng) chưa hoàn thành:**
-  `scripts/spark_streaming_shipment.py` (của Khang) hiện chỉ đếm event theo
-  cửa sổ thời gian + `event_type` + `warehouse_id`, loại bỏ `shipment_id`
-  khỏi output, nên chưa có "trạng thái mới nhất theo shipment" để join với
-  `shipment_risk_predictions`. Cần Khang sửa để giữ `shipment_id`, và cần
-  Cường tạo nơi lưu bảng `latest_shipment_tracking` +
-  `shipment_risk_alerts`. Logic đánh giá alert (`alert_evaluator.py`) có thể
-  viết và test độc lập ngay bây giờ (không phụ thuộc Spark/Kafka), nhưng nối
-  vào luồng dữ liệu thật thì phải chờ hai phần trên.
-- **Carrier giữa Kafka producer và Fact_Shipment không khớp 100%** (87/500
-  mẫu đối soát đúng do 2 pipeline dùng cách gán carrier khác nhau) — không
-  ảnh hưởng dashboard/model hiện tại (đều dùng carrier từ Fact), nhưng sẽ
-  ảnh hưởng nếu sau này nối thêm carrier từ luồng Kafka.
-- **Gợi ý tuyến chưa phải tối ưu đa tuyến** — do dataset chỉ có 1 route cho
-  mỗi cặp market–region (xem mục 3).
+### 5.1. Model làm gì?
+
+- Thuật toán: `LogisticRegression(class_weight="balanced")` của scikit-learn.
+- Feature: `route_key`, `warehouse_key`, `scheduled_time`, `sales`, `profit`,
+  `order_year`, `order_month`, `order_day_of_week`.
+- Không dùng `lead_time`, `delay_hours`, `on_time`, `Delivery Status` làm
+  feature để tránh data leakage.
+- Chia dữ liệu theo thời gian: 80% train, 10% validation, 10% test.
+- Ngưỡng phân loại chọn trên validation bằng F2-score, với precision tối thiểu
+  0.65, ưu tiên bắt được shipment có nguy cơ trễ.
+
+Model đã được đánh giá trên tập test với ROC-AUC khoảng `0.7075`, precision
+`0.6193`, recall `0.8158`, F1 `0.7041`; threshold được chọn là `0.36` trên lần
+train đã bàn giao.
+
+### 5.2. Chạy lại từ đầu
+
+Train model và ghi artifact `.joblib`:
+
+```powershell
+.\.venv\Scripts\python.exe analytics\local_ml\train_warehouse_model.py
+```
+
+Score toàn bộ `Fact_Shipment` và upsert vào DuckDB:
+
+```powershell
+.\.venv\Scripts\python.exe analytics\local_ml\score_warehouse_duckdb.py
+```
+
+Kết quả là bảng `shipment_risk_predictions`. Script in số shipment đã score và
+phân bố `LOW`/`MEDIUM`/`HIGH`. Có thể chạy lại score bất cứ khi nào dữ liệu
+warehouse hoặc model thay đổi.
+
+Các file liên quan:
+
+```text
+analytics/local_ml/
+├── train_warehouse_model.py
+├── predict_warehouse_shipments.py
+├── score_warehouse_duckdb.py
+├── load_predictions_duckdb.py
+├── warehouse_artifacts/warehouse_late_delivery_pipeline.joblib
+└── sql/
+    ├── warehouse_scoring_input.sql
+    └── create_shipment_risk_predictions.sql
+```
+
+## 6. Chạy gợi ý carrier/route
+
+Gợi ý route dùng scoring minh bạch, không phải mô hình ML:
+
+```text
+score = 70% × historical on-time probability
+      + 20% × lead-time score
+      + 10% × cost score
+```
+
+Dataset chưa có shipping cost đáng tin cậy nên trọng số thực tế được chuẩn hoá
+về 77.78% on-time và 22.22% lead time. Với mỗi route, candidate carrier có điểm
+cao nhất được chọn. Đây là gợi ý carrier tốt nhất cho route sẵn có; dataset chỉ
+có một route cho mỗi cặp market–region nên không phải bài toán tìm đường đi tối
+ưu giữa nhiều route khác nhau.
+
+Chạy:
+
+```powershell
+.\.venv\Scripts\python.exe analytics\route_recommender\build_warehouse_recommendations.py
+```
+
+Kết quả được lưu vào `route_recommendations`. Muốn lưu thêm bản CSV để kiểm tra:
+
+```powershell
+.\.venv\Scripts\python.exe analytics\route_recommender\build_warehouse_recommendations.py --output output\route_recommendations.csv
+```
+
+## 7. Export dữ liệu và chạy Dashboard Metabase
+
+### 7.1. Export DuckDB sang PostgreSQL
+
+Sau khi score model và build recommendation, chạy:
+
+```powershell
+docker compose up -d postgres_analytics metabase
+.\.venv\Scripts\python.exe analytics\metabase\export_to_postgres.py
+```
+
+Script export các bảng lịch sử, prediction, recommendation; nếu đã chạy
+realtime, nó export thêm `shipment_realtime_alert` và
+`shipment_risk_realtime_alert`. Chạy lại script này sau mọi thay đổi dữ liệu mà
+muốn thấy trên Metabase.
+
+### 7.2. Kết nối Metabase lần đầu
+
+1. Mở `http://localhost:3000` và hoàn tất setup wizard.
+2. Thêm database PostgreSQL với các thông tin sau:
+
+   | Trường | Giá trị |
+   | --- | --- |
+   | Host | `postgres_analytics` |
+   | Port | `5432` |
+   | Database | `analytics` |
+   | Username | `analytics` |
+   | Password | `analytics123` |
+
+3. Nếu vừa export bảng mới mà Metabase chưa thấy: **Admin settings → Databases
+   → Logistics Analytics → Đồng bộ schema cơ sở dữ liệu**, sau đó reload trang.
+
+### 7.3. Các card dashboard
+
+Các file SQL là nguồn để tạo lại card trên máy mới:
+
+| Card | File SQL | Nội dung |
+| --- | --- | --- |
+| 01 | `analytics/metabase/sql/01_overview_kpis.sql` | Tổng shipment, on-time rate, delay, doanh thu và lợi nhuận. |
+| 02 | `analytics/metabase/sql/02_delay_trend.sql` | Xu hướng SLA theo tháng. |
+| 03 | `analytics/metabase/sql/03_carrier_performance.sql` | Hiệu năng carrier. |
+| 04 | `analytics/metabase/sql/04_route_performance.sql` | Hiệu năng route. |
+| 05 | `analytics/metabase/sql/05_warehouse_performance.sql` | Hiệu năng warehouse. |
+| 06 | `analytics/metabase/sql/06_at_risk_shipments.sql` | Shipment `MEDIUM`/`HIGH` theo model. |
+| 07 | `analytics/metabase/sql/07_route_recommendations.sql` | Carrier được đề xuất theo route. |
+| 08 | `analytics/metabase/sql/08_realtime_risk_alerts.sql` | Số priority alert realtime theo `CRITICAL` và `HIGH`. |
+
+Tạo/lưu card theo các file trên rồi ghép vào `Logistics Overview Dashboard`.
+Metabase lưu dashboard và card trong database ứng dụng của chính nó, không nằm
+trong Git; máy mới cần tạo lại card từ các file SQL này.
+
+### 7.4. Cấu hình filter ngày trong dashboard
+
+Giữ filter dashboard **Ngày** là `Bộ chọn ngày` với **Toán tử lọc: Tất cả tuỳ
+chọn**, để có thể chọn khoảng “từ ngày đến ngày”.
+
+- Card 01–05 là báo cáo lịch sử và nên kết nối Date Filter theo cấu hình đang
+  lưu trong Metabase.
+- Card 06 là snapshot prediction hiện tại và card 07 là recommendation tổng
+  hợp. Không cần filter ngày; nếu một trong hai báo lỗi mapping thì gỡ kết nối
+  Date Filter riêng của card đó, không đổi filter toàn dashboard sang “Một
+  ngày”.
+- Card 08 dùng biến `{{date_filter}}` là **Field Filter** map vào
+  `Shipment Risk Realtime Alert → Event Timestamp`. Nó nên kết nối Date Filter
+  vì alert có timestamp thực tế.
+
+Card 08 là biểu đồ cột ngang, cấu hình:
+
+```text
+Trục Y: alert_priority
+Trục X: alert_count
+```
+
+Alert demo có thời gian hiện tại. Nếu dashboard filter chọn 2015–2018, card 08
+không có dữ liệu là đúng; chọn **Tất cả thời gian** hoặc ngày demo hiện tại để
+thấy cột `CRITICAL`/`HIGH`.
+
+## 8. Cảnh báo realtime ưu tiên theo ML (điểm cộng)
+
+### 8.1. Logic nghiệp vụ
+
+Khang đã bàn giao Spark stream giữ `shipment_id` và ghi một alert nguồn cho mỗi
+event `DELAYED` vào `shipment_realtime_alert`. Mong không sửa Spark. Script
+`analytics/realtime_alerts/evaluate_risk_alerts.py` poll bảng alert nguồn rồi
+join với `shipment_risk_predictions`:
+
+| ML risk của shipment | Priority tạo bởi Mong | Hành động |
+| --- | --- | --- |
+| `HIGH` | `CRITICAL` | Ưu tiên xử lý ngay. |
+| `MEDIUM` | `HIGH` | Cần theo dõi. |
+| `LOW` | Không tạo priority alert | Alert nguồn của Khang vẫn còn để audit, tránh làm nhiễu kênh ưu tiên. |
+
+Mỗi priority alert có khóa chính `event_id`. Vì vậy poll/retry không tạo alert
+trùng. Evaluator hiện in payload notification ở console và lưu DuckDB; chưa gửi
+email/Slack. Có thể nối email/Slack vào bảng `shipment_risk_realtime_alert` về
+sau mà không cần chỉnh Spark.
+
+Các file realtime của Mong:
+
+```text
+analytics/realtime_alerts/
+├── evaluate_risk_alerts.py                 # poll + join + tạo alert ưu tiên
+├── verify_risk_alerts.py                   # kiểm chứng đúng policy
+├── publish_priority_demo_event.py          # gửi ngay event DELAYED HIGH-risk
+└── sql/create_shipment_risk_realtime_alerts.sql
+```
+
+### 8.2. Demo realtime nhanh — khuyến nghị khi bảo vệ
+
+Kịch bản này không dùng `kafka_producer.py` ngẫu nhiên. Script one-shot chọn
+một shipment đã có ML risk `HIGH` rồi gửi ngay event `DELAYED`, nên evaluator
+sẽ tạo `CRITICAL` alert trong micro-batch kế tiếp.
+
+Trước khi demo, bảo đảm bảng prediction đã tồn tại (chạy phần 5.2 nếu cần), rồi
+mở **ba terminal** tại thư mục project.
+
+Terminal 1 — Spark của Khang:
+
+```powershell
+cd D:\DA\BigData_Logistics-
+docker compose up -d minio zookeeper kafka postgres_analytics metabase
+.\.venv\Scripts\python.exe scripts\spark_streaming_shipment.py --sink duckdb
+```
+
+Đợi terminal 1 hiện:
+
+```text
+Streaming from 'shipment-tracking-events' to duckdb.
+```
+
+Terminal 2 — consumer/evaluator của Mong:
+
+```powershell
+cd D:\DA\BigData_Logistics-
+.\.venv\Scripts\python.exe analytics\realtime_alerts\evaluate_risk_alerts.py --watch --poll-seconds 2
+```
+
+Terminal 3 — gửi event realtime xác định:
+
+```powershell
+cd D:\DA\BigData_Logistics-
+.\.venv\Scripts\python.exe analytics\realtime_alerts\publish_priority_demo_event.py
+```
+
+Kết quả cần chỉ ra khi demo:
+
+```text
+Terminal Spark:     REALTIME ALERT
+Terminal evaluator: RISK REALTIME ALERT ... [CRITICAL]
+```
+
+Sau đó kiểm chứng và cập nhật Metabase:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_realtime_tracking.py --require-events --require-alert
+.\.venv\Scripts\python.exe analytics\realtime_alerts\verify_risk_alerts.py --require-alert
+.\.venv\Scripts\python.exe analytics\metabase\export_to_postgres.py
+```
+
+Refresh dashboard Metabase, chọn **Tất cả thời gian** hoặc ngày hiện tại. Cột
+`CRITICAL` trên card 08 tăng thêm một alert.
+
+### 8.3. Demo đầy đủ bằng producer ngẫu nhiên
+
+Nếu muốn mô phỏng stream liên tục thay vì one-shot, giữ terminal Spark và
+evaluator như trên, sau đó ở terminal thứ ba chạy:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\kafka_producer.py
+```
+
+Producer gửi event mỗi giây. Khi có `DELAYED`, Spark tạo source alert và
+evaluator tạo priority alert nếu shipment đó có risk `MEDIUM` hoặc `HIGH`. Có
+thể cần chờ lâu hơn do event `DELAYED` được sinh ngẫu nhiên. Dừng producer bằng
+`Ctrl+C` sau khi đã có alert; không nhấn `Ctrl+C` trong terminal Spark trước khi
+Spark ghi micro-batch.
+
+### 8.4. Dừng demo
+
+Sau khi verification pass, dừng evaluator, Spark và producer (nếu chạy) bằng
+`Ctrl+C` ở từng terminal. Không dùng `docker compose down` nếu muốn giữ lại dữ
+liệu Metabase hiện tại; dùng:
+
+```powershell
+docker compose stop
+```
+
+## 9. Checklist kiểm tra trước khi bàn giao/bảo vệ
+
+### Dashboard, ML và recommendation
+
+```powershell
+# Có model artifact và score prediction trong DuckDB
+.\.venv\Scripts\python.exe analytics\local_ml\score_warehouse_duckdb.py
+
+# Có recommendation cho các route
+.\.venv\Scripts\python.exe analytics\route_recommender\build_warehouse_recommendations.py
+
+# Đưa dữ liệu mới nhất sang Metabase
+.\.venv\Scripts\python.exe analytics\metabase\export_to_postgres.py
+```
+
+### Realtime extension
+
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_realtime_tracking.py --require-events --require-alert
+.\.venv\Scripts\python.exe analytics\realtime_alerts\evaluate_risk_alerts.py --once
+.\.venv\Scripts\python.exe analytics\realtime_alerts\verify_risk_alerts.py --require-alert
+```
+
+Hai verification phải in:
+
+```text
+Realtime tracking verification passed
+Risk realtime alert verification passed
+```
+
+## 10. Giới hạn và lưu ý vận hành
+
+- Dashboard/card Metabase không nằm trong Git. SQL card nằm trong
+  `analytics/metabase/sql/` để tạo lại khi dùng máy khác.
+- `metabase` trong `docker-compose.yml` chưa gắn volume database nội bộ riêng.
+  Dùng `docker compose stop` an toàn hơn `docker compose down` nếu muốn giữ
+  dashboard đã tạo.
+- Metabase không tự đọc DuckDB; phải chạy
+  `analytics/metabase/export_to_postgres.py` để card phản ánh dữ liệu mới.
+- Card 08 là dashboard snapshot sau export, không phải websocket/live refresh.
+  Bằng chứng realtime trực tiếp là terminal Spark và evaluator.
+- **Cảnh báo realtime hiện tại là reactive, chưa phải proactive hoàn toàn.**
+  Spark chỉ ghi `shipment_realtime_alert` sau khi Kafka đã nhận event
+  `DELAYED`; evaluator của Mong mới join event đó với ML risk để xếp priority
+  `HIGH`/`CRITICAL`. Vì vậy implementation hiện tại có nghĩa là “phát hiện lô
+  đã báo trễ và ưu tiên xử lý theo dự đoán ML”, không phải “dự báo/cảnh báo lô
+  có nguy cơ trễ trước khi event `DELAYED` xảy ra”. Để đạt mục tiêu proactive
+  đầy đủ, cần bổ sung evaluator đọc `latest_shipment_tracking` ở các trạng thái
+  như `SCAN`/`IN_TRANSIT` và tạo alert cho shipment risk `HIGH`/`MEDIUM` trước
+  khi có event `DELAYED`.
+- Carrier trong Kafka producer và `Fact_Shipment` chưa khớp 100% do hai pipeline
+  gán carrier khác nhau. Điều này không ảnh hưởng model/dashboard lịch sử, nhưng
+  cần lưu ý nếu dùng carrier Kafka để phân tích sâu hơn.
+- **Gợi ý carrier/route là chọn carrier tốt nhất trên route có sẵn, không phải
+  tối ưu đa route.** Dataset chỉ có một route cho mỗi cặp market–region, nên
+  không có candidate route khác để tìm đường đi tối ưu. Nếu có dữ liệu nhiều
+  route/cost đáng tin cậy, có thể mở rộng scoring hoặc dùng model tối ưu hoá
+  tuyến như mục tiêu Vertex AI ban đầu.
+- **Chưa có KPI shipping cost đúng nghĩa.** Dataset không có trường chi phí vận
+  chuyển đáng tin cậy nên dashboard dùng `sales` và `profit` thay thế. Khi có
+  dữ liệu shipping cost, cần thêm metric này vào dashboard và đưa nó vào phần
+  điểm cost của recommendation.
+- Đây là implementation theo phương án local/open-source: Metabase thay Looker
+  Studio, scikit-learn thay BigQuery ML, và scoring local thay phần gợi ý
+  Vertex AI. Nó phù hợp phương án fallback trong đề bài; chưa phải bản triển
+  khai thật trên các managed service GCP bắt buộc của mô tả cloud ban đầu.
