@@ -58,11 +58,12 @@ Tài liệu này ghi lại phần Khang đã thực hiện qua bảy task trong 
 
 **File chính:** `scripts/spark_streaming_shipment.py`.
 
-- Đọc topic Kafka `shipment-tracking-events`, parse JSON theo schema sự kiện vận chuyển và chuyển `event_timestamp` sang timestamp.
-- Áp dụng watermark 5 phút; đếm sự kiện theo `event_type` và `warehouse_id` trong window 1 phút.
-- Hỗ trợ sink console (demo/debug) hoặc Parquet tại `s3a://curated/streaming_shipment_status/`; checkpoint được lưu MinIO để giữ offset qua lần chạy lại.
+- Đọc topic Kafka `shipment-tracking-events`, parse JSON theo schema sự kiện vận chuyển, giữ nguyên `shipment_id` và metadata Kafka (`topic`, `partition`, `offset`, timestamp).
+- Sink mặc định `duckdb` lưu lịch sử vào `shipment_tracking_event` theo khóa `event_id`, upsert trạng thái mới nhất vào `latest_shipment_tracking` theo `shipment_id`, và ghi alert bền vững vào `shipment_realtime_alert` khi `event_type = DELAYED`.
+- Mỗi micro-batch có checkpoint MinIO riêng. Việc retry an toàn vì `event_id` là khóa chính ở lịch sử/alert và trạng thái latest chỉ thay khi event mới hơn theo timestamp cùng Kafka offset.
+- Vẫn hỗ trợ sink console để debug hoặc Parquet tại `s3a://curated/shipment_tracking_events/`, trong đó output giữ đầy đủ `shipment_id`.
 
-**Hiệu quả:** cung cấp luồng giám sát sự kiện theo event-time, chịu được sự kiện đến trễ trong giới hạn watermark và có đầu ra bền vững cho phân tích tiếp theo.
+**Hiệu quả:** chạy được cảnh báo realtime theo từng shipment với semantics exactly-once ở tầng lưu trữ: một event hợp lệ chỉ tạo tối đa một alert bền vững và event đến trễ không ghi đè trạng thái mới hơn. Chi tiết vận hành và query bàn giao nằm trong `HANDOFF_KHANG_TO_MONG_REALTIME.md`.
 
 ## Task 7 — Bàn giao và kiểm tra warehouse
 
