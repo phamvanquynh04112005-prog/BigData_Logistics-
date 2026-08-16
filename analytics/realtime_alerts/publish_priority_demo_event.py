@@ -1,9 +1,9 @@
-"""Publish one deterministic DELAYED event for the realtime-alert demo.
+"""Publish one deterministic pre-delay event for the proactive-alert demo.
 
 The normal Kafka producer emits events randomly.  This helper selects an
-existing HIGH-risk shipment from the local ML prediction table and publishes a
-single valid DELAYED event, so the Spark stream and ML evaluator can display a
-CRITICAL alert within the next micro-batch.
+HIGH-risk shipment that has no terminal tracking history and publishes a valid
+SCAN event.  The evaluator can therefore display a CRITICAL warning while the
+shipment has not produced DELAYED or DELIVERED.
 
 Run after the Spark stream and ``evaluate_risk_alerts.py --watch`` are active:
 
@@ -28,11 +28,27 @@ DEFAULT_BOOTSTRAP_SERVERS = "localhost:9092"
 
 
 def select_high_risk_shipment(database: Path) -> dict[str, object]:
-    """Select a warehouse shipment that will deterministically become CRITICAL."""
+    """Select an unalerted shipment that will deterministically become CRITICAL."""
     connection = duckdb.connect(str(database), read_only=True)
     try:
-        row = connection.execute(
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+            ).fetchall()
+        }
+        if "shipment_tracking_event" not in tables:
+            raise RuntimeError("Run the Spark realtime stream before publishing the demo event.")
+        proactive_exclusion = ""
+        if "shipment_proactive_risk_alert" in tables:
+            proactive_exclusion = """
+              AND NOT EXISTS (
+                  SELECT 1 FROM shipment_proactive_risk_alert AS alert
+                  WHERE alert.shipment_id = prediction.shipment_id
+              )
             """
+        row = connection.execute(
+            f"""
             SELECT
                 prediction.shipment_id,
                 shipment.order_key,
@@ -45,6 +61,12 @@ def select_high_risk_shipment(database: Path) -> dict[str, object]:
             LEFT JOIN Dim_Warehouse AS warehouse
                 ON warehouse.warehouse_id = shipment.warehouse_key
             WHERE prediction.risk_level = 'HIGH'
+              AND NOT EXISTS (
+                  SELECT 1 FROM shipment_tracking_event AS terminal_event
+                  WHERE terminal_event.shipment_id = prediction.shipment_id
+                    AND terminal_event.event_type IN ('DELAYED', 'DELIVERED')
+              )
+              {proactive_exclusion}
             ORDER BY prediction.late_risk_probability DESC, prediction.shipment_id
             LIMIT 1
             """
@@ -62,7 +84,7 @@ def select_high_risk_shipment(database: Path) -> dict[str, object]:
     }
 
 
-def build_delayed_event(shipment: dict[str, object]) -> dict[str, object]:
+def build_pre_delay_event(shipment: dict[str, object]) -> dict[str, object]:
     """Build the same schema-versioned payload as the normal Kafka producer."""
     return {
         "schema_version": "1.1",
@@ -71,7 +93,7 @@ def build_delayed_event(shipment: dict[str, object]) -> dict[str, object]:
         "order_key": shipment["order_key"],
         "carrier_id": shipment["carrier_id"],
         "warehouse_id": shipment["warehouse_id"],
-        "event_type": "DELAYED",
+        "event_type": "SCAN",
         "event_timestamp": datetime.now(timezone.utc).isoformat(),
         "region": shipment["region"],
     }
@@ -88,7 +110,7 @@ def main() -> None:
     if not database.exists():
         raise FileNotFoundError(f"DuckDB database not found: {database}")
     shipment = select_high_risk_shipment(database)
-    event = build_delayed_event(shipment)
+    event = build_pre_delay_event(shipment)
     producer = KafkaProducer(
         bootstrap_servers=args.bootstrap_servers,
         value_serializer=lambda value: json.dumps(value).encode("utf-8"),
@@ -99,10 +121,10 @@ def main() -> None:
     finally:
         producer.close()
     print(
-        f"Published deterministic DELAYED event for HIGH-risk shipment {event['shipment_id']} "
+        f"Published deterministic SCAN event for HIGH-risk shipment {event['shipment_id']} "
         f"to {args.topic} (partition={metadata.partition}, offset={metadata.offset})."
     )
-    print("Watch Spark for REALTIME ALERT and the evaluator for a CRITICAL RISK REALTIME ALERT.")
+    print("The shipment has no DELAYED event. Watch the evaluator for a CRITICAL proactive alert.")
 
 
 if __name__ == "__main__":

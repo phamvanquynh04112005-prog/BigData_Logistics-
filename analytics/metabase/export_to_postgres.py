@@ -23,6 +23,7 @@ REQUIRED_TABLES = [
 OPTIONAL_REALTIME_TABLES = [
     "shipment_realtime_alert",
     "shipment_risk_realtime_alert",
+    "shipment_proactive_risk_alert",
 ]
 
 

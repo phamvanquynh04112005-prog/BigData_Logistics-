@@ -13,7 +13,7 @@ Phần 5 sử dụng phương án open-source chạy local đã được xác nh
 | Dashboard phân tích | Metabase + PostgreSQL Analytics | 7 card phân tích lịch sử và 1 dashboard `Logistics Overview Dashboard`. |
 | Dự đoán trễ giao hàng | scikit-learn `LogisticRegression` | Model và bảng `shipment_risk_predictions`. |
 | Gợi ý carrier cho route | Scoring minh bạch tại local | Bảng `route_recommendations`. |
-| Cảnh báo realtime ưu tiên theo ML (điểm cộng) | Kafka + Spark của Khang + DuckDB + Python evaluator | Alert `HIGH`/`CRITICAL` trong `shipment_risk_realtime_alert`, card Metabase số 08. |
+| Cảnh báo realtime chủ động theo ML (điểm cộng) | Kafka + Spark của Khang + DuckDB + Python evaluator | Alert `HIGH`/`CRITICAL` trước `DELAYED` trong `shipment_proactive_risk_alert`, card Metabase số 08. |
 
 Luồng dữ liệu tổng quát:
 
@@ -24,11 +24,11 @@ Fact_Shipment / dimensions (DuckDB)
         ├──> route scoring ─────────────────────> route_recommendations
         └──> export DuckDB -> PostgreSQL ───────> Metabase dashboard
 
-Kafka producer -> Spark Streaming (Khang) -> shipment_realtime_alert
+Kafka producer -> Spark Streaming (Khang) -> latest_shipment_tracking
                                               │
 shipment_risk_predictions ────────────────────┤
-                                              └──> ML priority evaluator
-                                                     -> shipment_risk_realtime_alert
+                                              └──> proactive ML evaluator
+                                                     -> shipment_proactive_risk_alert
                                                      -> PostgreSQL -> Metabase card 08
 ```
 
@@ -46,7 +46,8 @@ File `logistics.duckdb` là warehouse local. Phần Mong đọc/ghi các bảng 
 | `shipment_tracking_event` | Spark của Khang | Lịch sử event Kafka đầy đủ, có metadata audit. |
 | `latest_shipment_tracking` | Spark của Khang | Trạng thái mới nhất theo `shipment_id`. |
 | `shipment_realtime_alert` | Spark của Khang | Một alert bền vững cho mỗi event `DELAYED`. |
-| `shipment_risk_realtime_alert` | Evaluator của Mong | Alert ưu tiên sau khi join delay event với ML risk. |
+| `shipment_risk_realtime_alert` | Evaluator cũ của Mong | Dữ liệu reactive cũ, giữ lại để đối chiếu; card 08 không còn sử dụng. |
+| `shipment_proactive_risk_alert` | Evaluator của Mong | Alert nguy cơ trễ khi shipment còn `SCAN`/`IN_TRANSIT`/`OUT_FOR_DELIVERY` và chưa có `DELAYED`. |
 
 ### 2.2. PostgreSQL Analytics chỉ phục vụ Metabase
 
@@ -236,8 +237,8 @@ docker compose up -d postgres_analytics metabase
 
 Script export các bảng lịch sử, prediction, recommendation; nếu đã chạy
 realtime, nó export thêm `shipment_realtime_alert` và
-`shipment_risk_realtime_alert`. Chạy lại script này sau mọi thay đổi dữ liệu mà
-muốn thấy trên Metabase.
+`shipment_proactive_risk_alert` (cùng bảng reactive cũ nếu còn tồn tại). Chạy
+lại script này sau mọi thay đổi dữ liệu mà muốn thấy trên Metabase.
 
 ### 7.2. Kết nối Metabase lần đầu
 
@@ -286,7 +287,7 @@ chọn**, để có thể chọn khoảng “từ ngày đến ngày”.
   Date Filter riêng của card đó, không đổi filter toàn dashboard sang “Một
   ngày”.
 - Card 08 dùng biến `{{date_filter}}` là **Field Filter** map vào
-  `Shipment Risk Realtime Alert → Event Timestamp`. Nó nên kết nối Date Filter
+  `Shipment Proactive Risk Alert → Event Timestamp`. Nó nên kết nối Date Filter
   vì alert có timestamp thực tế.
 
 Card 08 là biểu đồ cột ngang, cấu hình:
@@ -300,41 +301,47 @@ Alert demo có thời gian hiện tại. Nếu dashboard filter chọn 2015–20
 không có dữ liệu là đúng; chọn **Tất cả thời gian** hoặc ngày demo hiện tại để
 thấy cột `CRITICAL`/`HIGH`.
 
-## 8. Cảnh báo realtime ưu tiên theo ML (điểm cộng)
+## 8. Cảnh báo realtime chủ động theo ML (điểm cộng)
 
 ### 8.1. Logic nghiệp vụ
 
-Khang đã bàn giao Spark stream giữ `shipment_id` và ghi một alert nguồn cho mỗi
-event `DELAYED` vào `shipment_realtime_alert`. Mong không sửa Spark. Script
-`analytics/realtime_alerts/evaluate_risk_alerts.py` poll bảng alert nguồn rồi
-join với `shipment_risk_predictions`:
+Khang đã bàn giao Spark stream giữ lịch sử trong `shipment_tracking_event` và
+trạng thái mới nhất trong `latest_shipment_tracking`. Mong không sửa Spark.
+Script `analytics/realtime_alerts/evaluate_risk_alerts.py` poll trạng thái mới
+nhất rồi join với `shipment_risk_predictions`. Alert chỉ đủ điều kiện khi:
+
+1. Trạng thái hiện tại là `SCAN`, `IN_TRANSIT` hoặc `OUT_FOR_DELIVERY`.
+2. ML risk là `MEDIUM` hoặc `HIGH`.
+3. Shipment chưa từng có event `DELAYED` hoặc `DELIVERED`.
 
 | ML risk của shipment | Priority tạo bởi Mong | Hành động |
 | --- | --- | --- |
 | `HIGH` | `CRITICAL` | Ưu tiên xử lý ngay. |
 | `MEDIUM` | `HIGH` | Cần theo dõi. |
-| `LOW` | Không tạo priority alert | Alert nguồn của Khang vẫn còn để audit, tránh làm nhiễu kênh ưu tiên. |
+| `LOW` | Không tạo proactive alert | Không làm nhiễu kênh ưu tiên. |
 
-Mỗi priority alert có khóa chính `event_id`. Vì vậy poll/retry không tạo alert
-trùng. Evaluator hiện in payload notification ở console và lưu DuckDB; chưa gửi
-email/Slack. Có thể nối email/Slack vào bảng `shipment_risk_realtime_alert` về
+Mỗi alert giữ `event_id` của trạng thái đã kích hoạt và có ràng buộc unique trên
+`shipment_id`. Vì vậy poll/retry hoặc event trạng thái tiếp theo không tạo alert
+trùng. Evaluator in payload notification ở console và lưu DuckDB; chưa gửi
+email/Slack. Có thể nối email/Slack vào bảng `shipment_proactive_risk_alert` về
 sau mà không cần chỉnh Spark.
 
 Các file realtime của Mong:
 
 ```text
 analytics/realtime_alerts/
-├── evaluate_risk_alerts.py                 # poll + join + tạo alert ưu tiên
-├── verify_risk_alerts.py                   # kiểm chứng đúng policy
-├── publish_priority_demo_event.py          # gửi ngay event DELAYED HIGH-risk
+├── evaluate_risk_alerts.py                 # poll + tạo alert trước DELAYED
+├── verify_risk_alerts.py                   # kiểm chứng trigger và thứ tự thời gian
+├── publish_priority_demo_event.py          # gửi SCAN cho shipment HIGH-risk
 └── sql/create_shipment_risk_realtime_alerts.sql
 ```
 
 ### 8.2. Demo realtime nhanh — khuyến nghị khi bảo vệ
 
 Kịch bản này không dùng `kafka_producer.py` ngẫu nhiên. Script one-shot chọn
-một shipment đã có ML risk `HIGH` rồi gửi ngay event `DELAYED`, nên evaluator
-sẽ tạo `CRITICAL` alert trong micro-batch kế tiếp.
+một shipment ML risk `HIGH`, chưa có lịch sử terminal, rồi gửi event `SCAN`.
+Evaluator tạo `CRITICAL` alert trong micro-batch kế tiếp trong khi shipment vẫn
+chưa có event `DELAYED`.
 
 Trước khi demo, bảo đảm bảng prediction đã tồn tại (chạy phần 5.2 nếu cần), rồi
 mở **ba terminal** tại thư mục project.
@@ -370,8 +377,8 @@ cd D:\DA\BigData_Logistics-
 Kết quả cần chỉ ra khi demo:
 
 ```text
-Terminal Spark:     REALTIME ALERT
-Terminal evaluator: RISK REALTIME ALERT ... [CRITICAL]
+Terminal Spark:     Committed micro-batch ... 0 delay alert(s)
+Terminal evaluator: PROACTIVE RISK ALERT ... status=SCAN ... [CRITICAL]
 ```
 
 Sau đó kiểm chứng và cập nhật Metabase:
@@ -394,11 +401,10 @@ evaluator như trên, sau đó ở terminal thứ ba chạy:
 .\.venv\Scripts\python.exe scripts\kafka_producer.py
 ```
 
-Producer gửi event mỗi giây. Khi có `DELAYED`, Spark tạo source alert và
-evaluator tạo priority alert nếu shipment đó có risk `MEDIUM` hoặc `HIGH`. Có
-thể cần chờ lâu hơn do event `DELAYED` được sinh ngẫu nhiên. Dừng producer bằng
-`Ctrl+C` sau khi đã có alert; không nhấn `Ctrl+C` trong terminal Spark trước khi
-Spark ghi micro-batch.
+Producer gửi event mỗi giây. Ngay khi shipment risk `MEDIUM`/`HIGH` có trạng
+thái `SCAN`, `IN_TRANSIT` hoặc `OUT_FOR_DELIVERY`, evaluator tạo alert nếu chưa
+có `DELAYED`/`DELIVERED`. Dừng producer bằng `Ctrl+C` sau khi đã có alert; không
+nhấn `Ctrl+C` trong terminal Spark trước khi Spark ghi micro-batch.
 
 ### 8.4. Dừng demo
 
@@ -437,7 +443,7 @@ Hai verification phải in:
 
 ```text
 Realtime tracking verification passed
-Risk realtime alert verification passed
+Proactive risk alert verification passed
 ```
 
 ## 10. Giới hạn và lưu ý vận hành
@@ -451,15 +457,13 @@ Risk realtime alert verification passed
   `analytics/metabase/export_to_postgres.py` để card phản ánh dữ liệu mới.
 - Card 08 là dashboard snapshot sau export, không phải websocket/live refresh.
   Bằng chứng realtime trực tiếp là terminal Spark và evaluator.
-- **Cảnh báo realtime hiện tại là reactive, chưa phải proactive hoàn toàn.**
-  Spark chỉ ghi `shipment_realtime_alert` sau khi Kafka đã nhận event
-  `DELAYED`; evaluator của Mong mới join event đó với ML risk để xếp priority
-  `HIGH`/`CRITICAL`. Vì vậy implementation hiện tại có nghĩa là “phát hiện lô
-  đã báo trễ và ưu tiên xử lý theo dự đoán ML”, không phải “dự báo/cảnh báo lô
-  có nguy cơ trễ trước khi event `DELAYED` xảy ra”. Để đạt mục tiêu proactive
-  đầy đủ, cần bổ sung evaluator đọc `latest_shipment_tracking` ở các trạng thái
-  như `SCAN`/`IN_TRANSIT` và tạo alert cho shipment risk `HIGH`/`MEDIUM` trước
-  khi có event `DELAYED`.
+- Cảnh báo hiện đã proactive theo yêu cầu: evaluator đọc
+  `latest_shipment_tracking` và tạo alert ở `SCAN`/`IN_TRANSIT`/
+  `OUT_FOR_DELIVERY` trước `DELAYED`. Xác suất ML hiện là điểm risk tĩnh theo
+  shipment, chưa cập nhật thêm ETA/vị trí/thời tiết theo từng event.
+- Mỗi `shipment_id` chỉ tạo một proactive alert. Producer demo tái sử dụng cùng
+  shipment sau khi hoàn thành một vòng đời, nhưng dữ liệu chưa có `lifecycle_id`;
+  vì vậy evaluator cố ý không cảnh báo lại shipment đã từng `DELAYED`/`DELIVERED`.
 - Carrier trong Kafka producer và `Fact_Shipment` chưa khớp 100% do hai pipeline
   gán carrier khác nhau. Điều này không ảnh hưởng model/dashboard lịch sử, nhưng
   cần lưu ý nếu dùng carrier Kafka để phân tích sâu hơn.

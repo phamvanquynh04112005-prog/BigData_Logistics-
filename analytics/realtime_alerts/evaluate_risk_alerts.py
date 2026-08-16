@@ -1,4 +1,4 @@
-"""Prioritise durable DELAYED events with the shipment-risk model.
+"""Create proactive late-risk alerts before a DELAYED event exists.
 
 Run once after Spark has written realtime events:
 
@@ -8,10 +8,12 @@ Or keep a lightweight polling consumer running during a demo:
 
     .\\.venv\\Scripts\\python.exe analytics\\realtime_alerts\\evaluate_risk_alerts.py --watch
 
-The evaluator deliberately does not alter Khang's Spark job or its source
-alerts.  It reads the durable ``shipment_realtime_alert`` table and creates
-exactly one analytics alert per DELAYED event whose ML risk level is MEDIUM or
-HIGH.  The event_id primary key makes every poll idempotent.
+The evaluator deliberately does not alter Khang's Spark job or source tables.
+It reads ``latest_shipment_tracking`` and creates one analytics alert when a
+shipment is still in SCAN, IN_TRANSIT or OUT_FOR_DELIVERY, its ML risk is
+MEDIUM/HIGH, and no DELAYED or DELIVERED event has occurred for that shipment.
+The unique shipment_id makes repeated polling and later tracking events
+idempotent.
 """
 
 from __future__ import annotations
@@ -25,15 +27,20 @@ import duckdb
 
 ROOT = Path(__file__).resolve().parents[2]
 DDL_PATH = Path(__file__).parent / "sql" / "create_shipment_risk_realtime_alerts.sql"
-REQUIRED_SOURCE_TABLES = {"shipment_realtime_alert", "shipment_risk_predictions"}
+REQUIRED_SOURCE_TABLES = {
+    "latest_shipment_tracking",
+    "shipment_tracking_event",
+    "shipment_risk_predictions",
+}
 
 ELIGIBLE_ALERTS_SQL = """
 SELECT
-    realtime.event_id,
-    realtime.shipment_id,
-    realtime.carrier_id,
-    realtime.warehouse_id,
-    realtime.event_timestamp,
+    tracking.event_id,
+    tracking.shipment_id,
+    tracking.carrier_id,
+    tracking.warehouse_id,
+    tracking.event_type AS trigger_event_type,
+    tracking.event_timestamp,
     prediction.late_risk_probability,
     prediction.risk_level,
     CASE prediction.risk_level
@@ -41,16 +48,24 @@ SELECT
         WHEN 'MEDIUM' THEN 'HIGH'
     END AS alert_priority,
     concat(
-        'Delay detected for shipment ', realtime.shipment_id,
-        ' at ', realtime.warehouse_id,
-        '. ML late-delivery risk: ', prediction.risk_level,
-        ' (', round(prediction.late_risk_probability * 100, 1), '%).'
+        'Proactive delay-risk warning for shipment ', tracking.shipment_id,
+        ' at ', tracking.warehouse_id,
+        ' while status is ', tracking.event_type,
+        '. Predicted late-delivery risk: ', prediction.risk_level,
+        ' (', round(prediction.late_risk_probability * 100, 1),
+        '%); no DELAYED event has occurred.'
     ) AS notification_message
-FROM shipment_realtime_alert AS realtime
+FROM latest_shipment_tracking AS tracking
 INNER JOIN shipment_risk_predictions AS prediction
-    ON prediction.shipment_id = realtime.shipment_id
-WHERE realtime.alert_status = 'OPEN'
+    ON prediction.shipment_id = tracking.shipment_id
+WHERE tracking.event_type IN ('SCAN', 'IN_TRANSIT', 'OUT_FOR_DELIVERY')
   AND prediction.risk_level IN ('MEDIUM', 'HIGH')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM shipment_tracking_event AS terminal_event
+      WHERE terminal_event.shipment_id = tracking.shipment_id
+        AND terminal_event.event_type IN ('DELAYED', 'DELIVERED')
+  )
 """
 
 
@@ -80,9 +95,9 @@ def evaluate_once(database: Path) -> list[tuple]:
             f"""
             SELECT eligible.*
             FROM ({ELIGIBLE_ALERTS_SQL}) AS eligible
-            LEFT JOIN shipment_risk_realtime_alert AS existing
-                ON existing.event_id = eligible.event_id
-            WHERE existing.event_id IS NULL
+            LEFT JOIN shipment_proactive_risk_alert AS existing
+                ON existing.shipment_id = eligible.shipment_id
+            WHERE existing.shipment_id IS NULL
             ORDER BY eligible.event_timestamp
             """
         ).fetchall()
@@ -93,17 +108,19 @@ def evaluate_once(database: Path) -> list[tuple]:
         try:
             connection.execute(
                 f"""
-                INSERT INTO shipment_risk_realtime_alert (
+                INSERT INTO shipment_proactive_risk_alert (
                     event_id, shipment_id, carrier_id, warehouse_id,
-                    event_timestamp, late_risk_probability, risk_level,
+                    trigger_event_type, event_timestamp,
+                    late_risk_probability, risk_level,
                     alert_priority, notification_message
                 )
                 SELECT
                     event_id, shipment_id, carrier_id, warehouse_id,
-                    event_timestamp, late_risk_probability, risk_level,
+                    trigger_event_type, event_timestamp,
+                    late_risk_probability, risk_level,
                     alert_priority, notification_message
                 FROM ({ELIGIBLE_ALERTS_SQL})
-                ON CONFLICT (event_id) DO NOTHING
+                ON CONFLICT DO NOTHING
                 """
             )
             connection.execute("COMMIT")
@@ -118,13 +135,17 @@ def evaluate_once(database: Path) -> list[tuple]:
 def print_alerts(alerts: list[tuple]) -> None:
     """Emit a notification-ready console payload without exposing duplicate alerts."""
     if not alerts:
-        print("No new MEDIUM/HIGH risk alerts.")
+        print("No new proactive MEDIUM/HIGH risk alerts.")
         return
-    print(f"RISK REALTIME ALERT: {len(alerts)} new alert(s)")
-    for _, shipment_id, _, warehouse_id, _, probability, risk_level, priority, message in alerts:
+    print(f"PROACTIVE RISK ALERT: {len(alerts)} new alert(s) before DELAYED")
+    for (
+        _, shipment_id, _, warehouse_id, trigger_event_type, _, probability,
+        risk_level, priority, message,
+    ) in alerts:
         print(
             f"  [{priority}] shipment={shipment_id} warehouse={warehouse_id} "
-            f"risk={risk_level} probability={probability:.1%}\n"
+            f"status={trigger_event_type} risk={risk_level} "
+            f"probability={probability:.1%}\n"
             f"    {message}"
         )
 
