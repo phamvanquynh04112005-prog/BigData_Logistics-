@@ -16,6 +16,69 @@ Phần 5 sử dụng phương án open-source chạy local đã được xác nh
 | Cảnh báo realtime chủ động theo ML (điểm cộng) | Kafka + Spark của Khang + DuckDB + Python evaluator | Alert `HIGH`/`CRITICAL` trước `DELAYED` trong `shipment_proactive_risk_alert`, card Metabase số 08. |
 | Mô phỏng gián đoạn chuỗi cung ứng (điểm cộng) | Deterministic what-if simulation | Kịch bản kho/carrier/route, KPI trước–sau, shipment bị ảnh hưởng và khuyến nghị; card 09–11. |
 
+### 1.1. Nhật ký hoàn thành hai phần mở rộng
+
+#### Phần mở rộng 1 — cảnh báo realtime trước `DELAYED`
+
+Phần cảnh báo cũ chỉ đọc `shipment_realtime_alert` sau khi event `DELAYED` đã
+xảy ra. Mong đã chuyển luồng này thành cảnh báo proactive mà không sửa code
+Kafka/Spark của Khang:
+
+- Đọc `latest_shipment_tracking` và chỉ xét trạng thái `SCAN`, `IN_TRANSIT`,
+  `OUT_FOR_DELIVERY`.
+- Join với `shipment_risk_predictions`; tạo alert khi risk là `MEDIUM` hoặc
+  `HIGH` và shipment chưa từng `DELAYED`/`DELIVERED`.
+- Lưu riêng vào `shipment_proactive_risk_alert`, unique theo `shipment_id` để
+  poll/retry hoặc trạng thái tiếp theo không tạo alert trùng.
+- Đổi script demo từ gửi `DELAYED` sang gửi `SCAN` cho shipment `HIGH` risk.
+- Bổ sung verifier chứng minh trigger là event trước trễ, không có alert nào
+  được evaluate sau `DELAYED`, priority đúng và không trùng shipment.
+- Đổi card Metabase 08 sang bảng proactive và map `date_filter` vào
+  `shipment_proactive_risk_alert.event_timestamp`.
+
+Kết quả trên dữ liệu hiện tại: **99 proactive alert**, gồm **50 `CRITICAL`** và
+**49 `HIGH`**; số alert được tạo sau `DELAYED` là **0**. Chạy evaluator lần hai
+không sinh thêm bản ghi. Card 08 đã hiển thị đúng hai giá trị 50/49 trên
+`Logistics Overview Dashboard`.
+
+#### Phần mở rộng 2 — mô phỏng gián đoạn chuỗi cung ứng
+
+Mong đã xây engine deterministic what-if độc lập trên `Fact_Shipment` và các
+dimension, không sửa dữ liệu nguồn và không thay đổi Airflow/dbt/Spark:
+
+- Hỗ trợ `warehouse_outage`, `carrier_disruption`, `route_disruption`.
+- Nhận target, số giờ delay cộng thêm, phần trăm shipment bị ảnh hưởng và seed.
+- Dùng SHA-256 của `seed:shipment_id` để cùng tham số luôn chọn cùng cohort.
+- Tính lead time, delay, on-time rate trước/sau, shipment mới trễ, sales/profit
+  at risk ở cả grain shipment và summary.
+- Sinh ba khuyến nghị giảm thiểu cho mỗi scenario; carrier/route scenario dùng
+  hiệu suất lịch sử để tìm carrier candidate minh bạch.
+- Bổ sung verifier đối chiếu target, công thức shipment, KPI tổng hợp và
+  recommendation.
+- Bổ sung SQL card 09 (KPI trước–sau), 10 (shipment bị ảnh hưởng) và 11
+  (khuyến nghị giảm thiểu), chạy được trên cả DuckDB và PostgreSQL.
+
+Ba scenario đã chạy và pass verification:
+
+| Scenario | Target/affected | Newly late | On-time rate trước → sau |
+| --- | ---: | ---: | ---: |
+| `WH003 outage 24h` | 1.677 / 1.677 | 346 | 42,04% → 21,41% |
+| `CARR002 capacity loss 60pct` | 30.039 / 17.972 | 3.857 | 45,11% → 32,27% |
+| `RT001 disruption 18h` | 1.677 / 1.241 | 254 | 42,04% → 26,89% |
+
+DuckDB/PostgreSQL hiện có **3 scenario**, **33.393 dòng shipment impact**, **3
+KPI summary** và **9 recommendation**. Dữ liệu cho card 09–11 đã export sang
+PostgreSQL; khi dựng giao diện Metabase chỉ cần tạo ba card từ các file SQL và
+thêm chúng vào dashboard.
+
+Hai phần được tách theo Git:
+
+- `feature/proactive-realtime-alerts`: implementation phần mở rộng 1.
+- `feature/disruption-simulation`: kế thừa phần 1 và bổ sung phần mở rộng 2.
+
+Toàn bộ thay đổi nằm trong `analytics/`, SQL Metabase và tài liệu
+`HoaiMong.md`; không sửa file thuộc phần của Quỳnh, Khang, Huy hoặc Cường.
+
 Luồng dữ liệu tổng quát:
 
 ```text
