@@ -10,10 +10,11 @@ Phần 5 sử dụng phương án open-source chạy local đã được xác nh
 
 | Hạng mục | Công cụ/thuật toán | Đầu ra đã hoàn thành |
 | --- | --- | --- |
-| Dashboard phân tích | Metabase + PostgreSQL Analytics | 7 card phân tích lịch sử và 1 dashboard `Logistics Overview Dashboard`. |
+| Dashboard phân tích | Metabase + PostgreSQL Analytics | 11 định nghĩa SQL card (8 card hiện có + 3 card mô phỏng) cho `Logistics Overview Dashboard`. |
 | Dự đoán trễ giao hàng | scikit-learn `LogisticRegression` | Model và bảng `shipment_risk_predictions`. |
 | Gợi ý carrier cho route | Scoring minh bạch tại local | Bảng `route_recommendations`. |
 | Cảnh báo realtime chủ động theo ML (điểm cộng) | Kafka + Spark của Khang + DuckDB + Python evaluator | Alert `HIGH`/`CRITICAL` trước `DELAYED` trong `shipment_proactive_risk_alert`, card Metabase số 08. |
+| Mô phỏng gián đoạn chuỗi cung ứng (điểm cộng) | Deterministic what-if simulation | Kịch bản kho/carrier/route, KPI trước–sau, shipment bị ảnh hưởng và khuyến nghị; card 09–11. |
 
 Luồng dữ liệu tổng quát:
 
@@ -22,6 +23,7 @@ Fact_Shipment / dimensions (DuckDB)
         │
         ├──> scikit-learn score ────────────────> shipment_risk_predictions
         ├──> route scoring ─────────────────────> route_recommendations
+        ├──> disruption what-if simulation ─────> scenario/impact/KPI/recommendation
         └──> export DuckDB -> PostgreSQL ───────> Metabase dashboard
 
 Kafka producer -> Spark Streaming (Khang) -> latest_shipment_tracking
@@ -48,6 +50,10 @@ File `logistics.duckdb` là warehouse local. Phần Mong đọc/ghi các bảng 
 | `shipment_realtime_alert` | Spark của Khang | Một alert bền vững cho mỗi event `DELAYED`. |
 | `shipment_risk_realtime_alert` | Evaluator cũ của Mong | Dữ liệu reactive cũ, giữ lại để đối chiếu; card 08 không còn sử dụng. |
 | `shipment_proactive_risk_alert` | Evaluator của Mong | Alert nguy cơ trễ khi shipment còn `SCAN`/`IN_TRANSIT`/`OUT_FOR_DELIVERY` và chưa có `DELAYED`. |
+| `disruption_scenario` | Disruption simulator của Mong | Tên, loại, target và tham số của từng kịch bản what-if. |
+| `shipment_disruption_impact` | Disruption simulator của Mong | Kết quả baseline/scenario ở grain một shipment trong cohort mục tiêu. |
+| `disruption_kpi_summary` | Disruption simulator của Mong | KPI trước–sau và thiệt hại tăng thêm của từng kịch bản. |
+| `disruption_mitigation_recommendation` | Disruption simulator của Mong | Ba hành động giảm thiểu có bằng chứng cho mỗi kịch bản. |
 
 ### 2.2. PostgreSQL Analytics chỉ phục vụ Metabase
 
@@ -238,7 +244,8 @@ docker compose up -d postgres_analytics metabase
 Script export các bảng lịch sử, prediction, recommendation; nếu đã chạy
 realtime, nó export thêm `shipment_realtime_alert` và
 `shipment_proactive_risk_alert` (cùng bảng reactive cũ nếu còn tồn tại). Chạy
-lại script này sau mọi thay đổi dữ liệu mà muốn thấy trên Metabase.
+lại script này sau mọi thay đổi dữ liệu mà muốn thấy trên Metabase. Nếu đã chạy
+mô phỏng, bốn bảng `disruption_*`/`shipment_disruption_impact` cũng được export.
 
 ### 7.2. Kết nối Metabase lần đầu
 
@@ -270,6 +277,9 @@ Các file SQL là nguồn để tạo lại card trên máy mới:
 | 06 | `analytics/metabase/sql/06_at_risk_shipments.sql` | Shipment `MEDIUM`/`HIGH` theo model. |
 | 07 | `analytics/metabase/sql/07_route_recommendations.sql` | Carrier được đề xuất theo route. |
 | 08 | `analytics/metabase/sql/08_realtime_risk_alerts.sql` | Số priority alert realtime theo `CRITICAL` và `HIGH`. |
+| 09 | `analytics/metabase/sql/09_disruption_kpi_comparison.sql` | KPI baseline và scenario của mọi kịch bản gián đoạn. |
+| 10 | `analytics/metabase/sql/10_disruption_affected_shipments.sql` | Tối đa 2.000 shipment bị ảnh hưởng của kịch bản mới nhất. |
+| 11 | `analytics/metabase/sql/11_disruption_mitigation_recommendations.sql` | Hành động giảm thiểu của kịch bản mới nhất. |
 
 Tạo/lưu card theo các file trên rồi ghép vào `Logistics Overview Dashboard`.
 Metabase lưu dashboard và card trong database ứng dụng của chính nó, không nằm
@@ -289,6 +299,7 @@ chọn**, để có thể chọn khoảng “từ ngày đến ngày”.
 - Card 08 dùng biến `{{date_filter}}` là **Field Filter** map vào
   `Shipment Proactive Risk Alert → Event Timestamp`. Nó nên kết nối Date Filter
   vì alert có timestamp thực tế.
+- Card 09–11 là snapshot what-if, không nối filter Ngày của dữ liệu lịch sử.
 
 Card 08 là biểu đồ cột ngang, cấu hình:
 
@@ -298,8 +309,8 @@ Trục X: alert_count
 ```
 
 Alert demo có thời gian hiện tại. Nếu dashboard filter chọn 2015–2018, card 08
-không có dữ liệu là đúng; chọn **Tất cả thời gian** hoặc ngày demo hiện tại để
-thấy cột `CRITICAL`/`HIGH`.
+không có dữ liệu là đúng; xóa giá trị filter `Ngày` hoặc chọn ngày demo hiện tại
+để thấy cột `CRITICAL`/`HIGH`.
 
 ## 8. Cảnh báo realtime chủ động theo ML (điểm cộng)
 
@@ -416,7 +427,77 @@ liệu Metabase hiện tại; dùng:
 docker compose stop
 ```
 
-## 9. Checklist kiểm tra trước khi bàn giao/bảo vệ
+## 9. Mô phỏng gián đoạn chuỗi cung ứng (điểm cộng)
+
+### 9.1. Phạm vi và công thức
+
+`analytics/disruption_simulation/simulate_disruption.py` hỗ trợ ba loại:
+
+| `scenario_type` | Target | Ví dụ |
+| --- | --- | --- |
+| `warehouse_outage` | `warehouse_key` | Kho `WH003` ngừng 24 giờ. |
+| `carrier_disruption` | `carrier_key` | `CARR002` mất 60% năng lực, cộng 12 giờ. |
+| `route_disruption` | `route_key` | Tuyến `RT001` bị cộng 18 giờ. |
+
+Simulator không sửa `Fact_Shipment`. Mọi shipment khớp target tạo thành cohort;
+`affected_percent` chọn phần bị tác động bằng SHA-256 của `seed:shipment_id`, nên
+cùng tham số và seed luôn chọn cùng shipment. Với shipment bị tác động:
+
+```text
+scenario_lead_time = baseline_lead_time + added_delay_hours / 24
+scenario_delay     = baseline_delay + added_delay_hours
+```
+
+Shipment baseline đã trễ không thể tự trở thành đúng hạn. Shipment baseline đúng
+hạn chỉ còn đúng hạn nếu khoảng giao sớm đủ hấp thụ phần delay cộng thêm. Kết quả
+lưu đầy đủ cohort để KPI scenario tính cả phần bị và không bị tác động.
+
+### 9.2. Chạy kịch bản
+
+Ví dụ kho `WH003` ngừng hoạt động 24 giờ:
+
+```powershell
+cd D:\DA\BigData_Logistics-
+.\.venv\Scripts\python.exe analytics\disruption_simulation\simulate_disruption.py `
+  --scenario-name "WH003 outage 24h" `
+  --scenario-type warehouse_outage `
+  --target-id WH003 `
+  --added-delay-hours 24 `
+  --affected-percent 100 `
+  --seed 42
+```
+
+Ví dụ carrier và route:
+
+```powershell
+.\.venv\Scripts\python.exe analytics\disruption_simulation\simulate_disruption.py `
+  --scenario-name "CARR002 capacity loss 60pct" `
+  --scenario-type carrier_disruption --target-id CARR002 `
+  --added-delay-hours 12 --affected-percent 60 --seed 42
+
+.\.venv\Scripts\python.exe analytics\disruption_simulation\simulate_disruption.py `
+  --scenario-name "RT001 disruption 18h" `
+  --scenario-type route_disruption --target-id RT001 `
+  --added-delay-hours 18 --affected-percent 75 --seed 42
+```
+
+Kịch bản demo `WH003 outage 24h` trên dữ liệu hiện tại cho kết quả: 1.677
+shipment bị ảnh hưởng, 346 shipment mới chuyển sang trễ, on-time rate giảm từ
+42,04% xuống 21,41%, average delay tăng từ 15,36 lên 39,36 giờ.
+
+### 9.3. Kiểm chứng và dashboard
+
+```powershell
+.\.venv\Scripts\python.exe analytics\disruption_simulation\verify_disruption_simulation.py --require-scenario
+.\.venv\Scripts\python.exe analytics\metabase\export_to_postgres.py
+```
+
+Verifier đối chiếu target, công thức từng shipment, KPI tổng hợp, tính duy nhất
+và sự tồn tại của recommendation. Sau khi export và sync schema Metabase, tạo
+card 09–11 từ ba file SQL tương ứng. Card 09 hiển thị mọi scenario; card 10 và
+11 dùng scenario mới nhất để demo chi tiết và hành động giảm thiểu.
+
+## 10. Checklist kiểm tra trước khi bàn giao/bảo vệ
 
 ### Dashboard, ML và recommendation
 
@@ -446,7 +527,17 @@ Realtime tracking verification passed
 Proactive risk alert verification passed
 ```
 
-## 10. Giới hạn và lưu ý vận hành
+### Disruption simulation extension
+
+```powershell
+.\.venv\Scripts\python.exe analytics\disruption_simulation\verify_disruption_simulation.py --require-scenario
+.\.venv\Scripts\python.exe analytics\metabase\export_to_postgres.py
+```
+
+Verification phải in `Disruption simulation verification passed`; PostgreSQL
+phải có bốn bảng mô phỏng để card 09–11 truy vấn được.
+
+## 11. Giới hạn và lưu ý vận hành
 
 - Dashboard/card Metabase không nằm trong Git. SQL card nằm trong
   `analytics/metabase/sql/` để tạo lại khi dùng máy khác.
@@ -476,6 +567,13 @@ Proactive risk alert verification passed
   chuyển đáng tin cậy nên dashboard dùng `sales` và `profit` thay thế. Khi có
   dữ liệu shipping cost, cần thêm metric này vào dashboard và đưa nó vào phần
   điểm cost của recommendation.
+- Mô phỏng gián đoạn là deterministic what-if trên dữ liệu lịch sử, không phải
+  digital twin hay dự báo mạng lưới vật lý. Dataset không có tọa độ, khoảng cách,
+  alternate warehouse/route và capacity theo thời gian, nên simulator không
+  tuyên bố tự động tìm tuyến hoặc kho thay thế tối ưu.
+- `sales_at_risk` và `profit_at_risk` là tổng của shipment **mới chuyển sang
+  trễ** trong scenario, không phải thiệt hại tài chính chắc chắn. Muốn quy đổi
+  thành tổn thất cần thêm SLA penalty, cancellation và shipping cost thực tế.
 - Đây là implementation theo phương án local/open-source: Metabase thay Looker
   Studio, scikit-learn thay BigQuery ML, và scoring local thay phần gợi ý
   Vertex AI. Nó phù hợp phương án fallback trong đề bài; chưa phải bản triển
