@@ -23,6 +23,14 @@ REQUIRED_TABLES = [
 OPTIONAL_REALTIME_TABLES = [
     "shipment_realtime_alert",
     "shipment_risk_realtime_alert",
+    "shipment_proactive_risk_alert",
+]
+
+OPTIONAL_DISRUPTION_TABLES = [
+    "disruption_scenario",
+    "shipment_disruption_impact",
+    "disruption_kpi_summary",
+    "disruption_mitigation_recommendation",
 ]
 
 
@@ -42,6 +50,13 @@ def main():
     for table in OPTIONAL_REALTIME_TABLES:
         if table not in available:
             print(f"Skipped {table}: run the realtime stream and evaluator first")
+            continue
+        df = con.execute(f"SELECT * FROM {table}").fetchdf()
+        df.to_sql(table.lower(), engine, if_exists="replace", index=False)
+        print(f"Exported {table} -> {table.lower()} ({len(df)} rows)")
+    for table in OPTIONAL_DISRUPTION_TABLES:
+        if table not in available:
+            print(f"Skipped {table}: run the disruption simulation first")
             continue
         df = con.execute(f"SELECT * FROM {table}").fetchdf()
         df.to_sql(table.lower(), engine, if_exists="replace", index=False)
